@@ -272,6 +272,8 @@ server {
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml image/svg+xml;
 
     error_page 404 /404.html;
+    # 目录无 index 时 Nginx 默认回 403，统一成 404，避免暴露目录结构
+    error_page 403 =404 /404.html;
 
     # ---- 代理路径：%s 双用途 ----
     # 带 Upgrade: websocket -> sing-box
