@@ -258,7 +258,8 @@ h1 em{font-style:normal;color:var(--accent)}
 /* ---------- tracking ---------- */
 .track-box{background:var(--card-bg);border:1px solid var(--line);border-radius:var(--radius);padding:36px}
 .track-box label{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
-.track-row{display:flex;gap:12px;margin-top:10px}
+.track-row{display:flex;gap:12px;margin-top:10px;align-items:stretch}
+.track-row .btn{padding-top:0;padding-bottom:0;white-space:nowrap}
 .track-row input{flex:1;padding:13px 16px;border:1px solid var(--line);border-radius:var(--radius-sm);
   background:var(--bg);color:var(--ink);font-size:14px;font-family:var(--font-b)}
 .track-row input:focus{outline:none;border-color:var(--accent)}

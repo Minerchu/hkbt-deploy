@@ -474,8 +474,7 @@ def render_tracking(tpl):
     t = tpl["tracking"]
     steps = "".join('<div class="tr-step"><span>%s</span><i>%d</i></div>' % (esc(s), i + 1)
                     for i, s in enumerate(t["steps"]))
-    carriers = "".join("<tr><td>%s</td><td>%s</td><td>可查询</td></tr>" % (
-        esc(c), esc(c)) for c in t["carriers"])
+    carriers = "".join("<tr><td>%s</td><td>全程可查</td></tr>" % esc(c) for c in t["carriers"])
     body = """%s
 <section class="sec">
   <div class="wrap narrow">
@@ -489,7 +488,7 @@ def render_tracking(tpl):
       <div class="tr-steps">%s</div>
     </div>
     <h2 class="h2s" style="margin-top:56px">合作承运商</h2>
-    <table class="tbl"><thead><tr><th>承运商</th><th>服务范围</th><th>状态</th></tr></thead>
+    <table class="tbl"><thead><tr><th>承运商</th><th>查询支持</th></tr></thead>
     <tbody>%s</tbody></table>
     <p class="note">演示站点：查询结果为模拟数据，正式部署后请接入你的物流接口。</p>
   </div>
@@ -507,7 +506,7 @@ def render_downloads(tpl):
   <div class="dl-arrow">↓</div>
 </a>""" % (esc(d["file"]), esc(d["name"]), esc(d["desc"]), esc(d["size"]))
     body = """%s
-<section class="sec"><div class="wrap narrow"><div class="dl-grid">%s</div>
+<section class="sec"><div class="wrap"><div class="dl-grid">%s</div>
 <p class="note">以上文件为示例单据，正式使用时请替换为贵司版本。</p></div></section>""" % (
         page_hero(tpl, "Downloads", "单据与资料下载", "常用文件集中在这里，点击即可下载。"), cards)
     return page(tpl, "%s — 资料下载" % tpl["brand"], "服务单据与资料下载", body, "")
