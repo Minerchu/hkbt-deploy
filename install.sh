@@ -201,11 +201,14 @@ echo -e "${BLD}═════════════════════�
 echo -e "${BLD}  安装完成${NC}"
 echo -e "${BLD}════════════════════════════════════════════════${NC}"
 echo
-[[ -n "$DOMAIN" ]] && echo -e "  网站地址   ${GRN}https://${DOMAIN}:${DPORT}/${NC}"
+# 443 时省略端口，其他端口显式带上
+if [[ "$DPORT" == "443" ]]; then PSUFFIX=""; else PSUFFIX=":${DPORT}"; fi
+[[ -n "$DOMAIN" ]] && echo -e "  网站地址   ${GRN}https://${DOMAIN}${PSUFFIX}/${NC}"
 echo -e "  代理地址   ${DOMAIN}:${DPORT}  路径 ${PATH_ARG:-（自动探测）}"
+echo -e "  共用端口   网站与代理都在 ${DPORT}"
 [[ -n "$BRAND" ]] && echo -e "  网站品牌   ${BRAND}"
 if [[ -n "$DOMAIN" && -n "$ADMIN" ]]; then
-  echo -e "  面板地址   ${GRN}https://${DOMAIN}:${DPORT}${ADMIN}/${NC}"
+  echo -e "  面板地址   ${GRN}https://${DOMAIN}${PSUFFIX}${ADMIN}/${NC}"
 fi
 echo -e "  面板密码   ${YEL}${PASSWORD}${NC}"
 echo

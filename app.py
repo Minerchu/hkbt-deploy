@@ -246,7 +246,7 @@ server {
     listen [::]:80;
     server_name %s;
     location ^~ /.well-known/acme-challenge/ { root %s; default_type "text/plain"; }
-    location / { return 301 https://$host$request_uri; }
+    location / { return 301 https://$host%s$request_uri; }
 }
 
 server {
@@ -315,7 +315,7 @@ server {
     }
 }
 """ % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, public_ip, port, path,
-       mapv, domain, site_dir,
+       mapv, domain, site_dir, ("" if str(port) == "443" else ":%s" % port),
        public_ip, port, h2_listen, h2_directive, domain,
        cert, key,
        path, path, site_dir,
