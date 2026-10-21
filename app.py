@@ -85,7 +85,29 @@ def verify_pw(pw, cfg):
     return hash_pw(pw, cfg.get("salt", "")) == cfg.get("password_hash", "")
 
 
+def is_private_ip(ip):
+    return bool(ip.startswith(("10.", "127.", "169.254.", "192.168."))
+                or re.match(r"^172\.(1[6-9]|2\d|3[01])\.", ip))
+
+
+def local_ips():
+    """本机网卡上真实存在的 IPv4 地址"""
+    rc, out, _ = run(["ip", "-4", "-o", "addr", "show", "scope", "global"])
+    return set(re.findall(r"inet (\d{1,3}(?:\.\d{1,3}){3})", out or ""))
+
+
 def public_ip():
+    """优先取真实公网 IP；NAT 机器上路由 src 只是内网地址"""
+    for url in ("https://api.ipify.org", "https://ifconfig.me/ip", "https://icanhazip.com"):
+        rc, out, _ = run(["curl", "-4", "-s", "-m", "6", url])
+        ip = (out or "").strip().splitlines()[0].strip() if out else ""
+        if rc == 0 and ip:
+            try:
+                ipaddress.IPv4Address(ip)
+                if not is_private_ip(ip):
+                    return ip
+            except Exception:
+                pass
     for c in (["ip", "-4", "-o", "route", "get", "1.1.1.1"],
               ["ip", "-4", "-o", "addr", "show", "scope", "global"]):
         rc, out, _ = run(c)
@@ -213,8 +235,22 @@ def nginx_version():
         return (0, 0, 0)
 
 
-def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path):
-    """生成共存配置。注意：必须绑公网 IP，不能绑 0.0.0.0"""
+def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, proxy_port=None):
+    """生成共存配置。注意：必须绑公网 IP，不能绑 0.0.0.0
+
+    port       = Nginx 对外监听端口（通常 443）
+    proxy_port = V2bX 实际监听的端口（默认与 port 相同；分离部署时如 21311）
+    """
+    proxy_port = str(proxy_port or port)
+
+    # 绑定地址：代理在独立端口时绑 0.0.0.0 最稳（NAT 机器上公网 IP 不在网卡上，
+    # 绑它会直接 bind 失败）；同端口场景必须绑本机真实持有的地址，否则会和代理抢 127.0.0.1
+    if proxy_port != str(port):
+        bind = "0.0.0.0"
+    elif public_ip and public_ip in local_ips():
+        bind = public_ip
+    else:
+        bind = "0.0.0.0"
     # http2 on; 指令需要 nginx >= 1.25.1，旧版需写在 listen 上
     ver = nginx_version()
     new_h2 = ver >= (1, 25, 1)
@@ -276,16 +312,10 @@ server {
     error_page 403 =404 /404.html;
 
     # ---- 代理路径：%s 双用途 ----
-    # 带 Upgrade: websocket -> sing-box
-    # 普通浏览器访问      -> 网站首页
+    # 带 Upgrade: websocket -> 代理
+    # 普通浏览器访问      -> 网站首页（伪装成普通页面）
     location = %s {
-        error_page 418 = @v2bx_ws;
-        if ($http_upgrade) { return 418; }
-        root %s;
-        try_files /index.html =404;
-    }
-
-    location @v2bx_ws {
+        if ($http_upgrade = "") { rewrite ^ /index.html last; }
         proxy_pass https://127.0.0.1:%s;
         proxy_ssl_verify off;
         proxy_ssl_server_name on;
@@ -319,10 +349,9 @@ server {
 }
 """ % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, public_ip, port, path,
        mapv, domain, site_dir, ("" if str(port) == "443" else ":%s" % port),
-       public_ip, port, h2_listen, h2_directive, domain,
+       bind, port, h2_listen, h2_directive, domain,
        cert, key,
-       path, path, site_dir,
-       port, domain,
+       path, path, proxy_port, domain,
        admin_block,
        site_dir, STATIC_EXTS, site_dir)
 
@@ -546,10 +575,11 @@ def unzip_site(zip_path, site_dir):
     return True, "已解压 %d 个文件到 %s" % (n, site_dir)
 
 
-def verify(domain, port, path, public_ip):
-    """部署后自检。连通性用 -k（证书可能自签/未生效），证书单独校验，避免误报。"""
+def verify(domain, port, path, public_ip, proxy_port=None):
+    """部署后自检。统一走 127.0.0.1，避免 NAT 机器公网回环不通造成误报。"""
+    proxy_port = str(proxy_port or port)
     checks = []
-    r = "--resolve %s:%s:%s" % (domain, port, public_ip)
+    r = "--resolve %s:%s:127.0.0.1" % (domain, port)
 
     _, code, _ = run("curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 %s https://%s:%s/" % (r, domain, port), shell=True)
     checks.append(("网站首页 /", code == "200", code or "连接失败"))
@@ -564,21 +594,26 @@ def verify(domain, port, path, public_ip):
         "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://%s:%s%s" % (r, domain, port, path), shell=True)
     checks.append(("代理路径 %s（WebSocket）" % path, wsc in ("101", "200"), wsc or "连接失败"))
 
-    _, subj, _ = run("echo | openssl s_client -connect %s:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (public_ip, port, domain), shell=True)
+    _, subj, _ = run("echo | openssl s_client -connect 127.0.0.1:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (port, domain), shell=True)
     ok_cert = (("CN=%s" % domain) in subj) or (("CN = %s" % domain) in subj)
     checks.append(("证书匹配域名", ok_cert, subj.replace("subject=", "") or "未取到（若自签证书可忽略）"))
 
     _, ls, _ = run(["ss", "-tlnp"])
     _, units, _ = run(["systemctl", "list-unit-files", "V2bX.service"])
     has_v2bx = "V2bX.service" in units
-    if has_v2bx:
-        checks.append(("sing-box 仅本机监听", ("127.0.0.1:%s" % port) in ls,
-                       "127.0.0.1:%s" % port if ("127.0.0.1:%s" % port) in ls else "未收窄，请检查"))
+    if has_v2bx and proxy_port == str(port):
+        checks.append(("sing-box 仅本机监听", ("127.0.0.1:%s" % proxy_port) in ls,
+                       "127.0.0.1:%s" % proxy_port if ("127.0.0.1:%s" % proxy_port) in ls else "未收窄，请检查"))
+    elif has_v2bx:
+        checks.append(("sing-box 独立端口", (":%s" % proxy_port) in ls,
+                       "监听 %s，由 Nginx 按路径转发" % proxy_port if (":%s" % proxy_port) in ls else "未观察到 %s" % proxy_port))
     else:
         checks.append(("sing-box 仅本机监听", True, "本机未安装 V2bX 服务，跳过"))
 
-    checks.append(("Nginx 接管公网端口", ("%s:%s" % (public_ip, port)) in ls,
-                   "%s:%s" % (public_ip, port) if ("%s:%s" % (public_ip, port)) in ls else "未观察到"))
+    listening = any(x in ls for x in ("0.0.0.0:%s" % port, "*:%s" % port, "[::]:%s" % port,
+                                      "%s:%s" % (public_ip, port)))
+    checks.append(("Nginx 监听端口", listening,
+                   "已监听 %s" % port if listening else "未观察到 %s 监听" % port))
     return checks
 
 
@@ -602,10 +637,18 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     v = detect_v2bx()
     if not v["installed"]:
         return add("环境检测", False, "未检测到 V2bX，本工具目前只支持 V2bX + sing-box"), steps
-    if v["api_ok"] and v["port"] != port:
-        add("端口一致性", False, "面板节点实际端口为 %s，你填的是 %s。若不一致会导致代理不可用，已按你填写的值继续，但请确认" % (v["port"], port))
-    if v["api_ok"] and v["path"] != path:
-        add("路径一致性", False, "面板节点实际路径为 %s，你填的是 %s。路径必须完全一致，否则客户端连不上" % (v["path"], path))
+
+    # 代理真实端口以面板 API 为准；取不到时退回「与 Nginx 同端口」的假设
+    proxy_port = str(v["port"]) if (v["api_ok"] and v["port"]) else str(port)
+    if v["api_ok"] and v["path"] and v["path"] != path:
+        return add("路径一致性", False,
+                   "面板节点实际路径为 %s，你填的是 %s。路径必须完全一致，否则客户端连不上"
+                   % (v["path"], path))
+    if proxy_port != str(port):
+        add("端口映射", True, "代理实际监听 %s，Nginx 对外 %s，按路径转发到 127.0.0.1:%s"
+            % (proxy_port, port, proxy_port))
+    else:
+        add("端口映射", True, "代理与 Nginx 同端口 %s（靠绑定地址区分）" % port)
 
     ip = public_ip()
     if not ip:
@@ -625,9 +668,13 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     else:
         add("清理冲突配置", True, "无冲突配置")
 
-    ok, msg = narrow_v2bx()
-    if not add("收窄 sing-box 监听", ok, msg):
-        return False, steps
+    # 只有代理与 Nginx 抢同一个端口时才需要收窄；独立端口（如 21311）保持原样
+    if proxy_port == str(port):
+        ok, msg = narrow_v2bx()
+        if not add("收窄 sing-box 监听", ok, msg):
+            return False, steps
+    else:
+        add("收窄 sing-box 监听", True, "代理在独立端口 %s，跳过收窄（不影响 443 分流）" % proxy_port)
 
     site_dir = DEFAULT_SITE
     if zip_path:
@@ -646,7 +693,7 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
 
     cfg = load_conf()
     admin_path = cfg.get("admin_path", "")
-    conf = gen_nginx(domain, port, path, site_dir, ip, cert, key, admin_path)
+    conf = gen_nginx(domain, port, path, site_dir, ip, cert, key, admin_path, proxy_port)
     os.makedirs(os.path.dirname(NGINX_CONF), exist_ok=True)
     with open(NGINX_CONF, "w", encoding="utf-8") as f:
         f.write(conf)
@@ -663,12 +710,13 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     add("重载 Nginx", True, "已生效")
 
     time.sleep(2)
-    checks = verify(domain, port, path, ip)
+    checks = verify(domain, port, path, ip, proxy_port)
     for name, okk, detail in checks:
         add("验证 · " + name, okk, detail)
 
     cfg.update({"brand": cfg.get("brand") or default_brand(domain),
                 "domain": domain, "port": port, "path": path,
+                "proxy_port": proxy_port,
                 "site_dir": site_dir, "public_ip": ip,
                 "last_deploy": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     save_conf(cfg)
