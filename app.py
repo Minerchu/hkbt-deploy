@@ -742,6 +742,10 @@ def cmd_init(password, port=None, path=None):
     if password:
         cfg["password_hash"] = hash_pw(password, cfg["salt"])
 
+    # 必须先落盘：do_deploy 会重新 load_conf() 读取 admin_path 来生成面板反代段，
+    # 否则首次安装时 admin_path 还在内存里，Nginx 配置会缺面板入口（访问 404）
+    save_conf(cfg)
+
     v = detect_v2bx()
     domain = v["domain"] or ""
     port = str(port or v["port"] or "443")
@@ -780,6 +784,11 @@ def cmd_init(password, port=None, path=None):
         print("  初始部署   : %s" % ("成功" if ok else "已写入配置但自检未通过，原因见上方 FAIL 行"))
     else:
         print("  初始部署   : 跳过（未检测到 V2bX 或缺少域名/IP）")
+        if not v["installed"]:
+            print("              本工具用于与 V2bX 共存部署，需要先装好 V2bX 并配置节点。")
+            print("              装好后重新执行：python3 %s/app.py --init --password 你的密码" % BASE)
+        elif not domain:
+            print("              未从 V2bX 配置取到域名，请检查 /etc/V2bX/config.json 的 CertConfig.CertDomain")
 
     # 以磁盘为准再合并：do_deploy 已写入 domain/brand/template，不能用开头加载的旧 cfg 覆盖
     cfg = merge_init_conf(cfg)

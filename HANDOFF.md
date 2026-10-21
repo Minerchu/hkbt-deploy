@@ -1,6 +1,6 @@
 # 交接文档
 
-> 本文件面向接手维护的人（或 agent）。当前状态：**功能完成，待推送**。
+> 本文件面向接手维护的人（或 agent）。当前状态：**功能完成，已推送并做过真实 Nginx 端到端验证**。
 
 ## 1. 项目是什么
 
@@ -26,7 +26,8 @@ Nginx 终结 TLS，按 `Upgrade` 头把 WebSocket 流量转发给 sing-box，普
 | `panel.html` 模板下拉 | ✅ |
 | `install.sh` 拷贝 `templates/sites` | ✅ |
 | README 模板清单 | ✅ |
-| 推送 GitHub | ⏳ 待执行 |
+| 推送 GitHub | ✅ `master` |
+| 真实 Nginx 安装验证 | ✅ 见第 9 节 |
 
 ## 3. 架构
 
@@ -96,7 +97,50 @@ python3 build/test_deploy.py      # 模板注册、选择、品牌/域名替换�
 
 ## 8. 已知限制
 
-- 只支持 V2bX + sing-box；未检测到会明确报错
+- 只支持 V2bX + sing-box；未检测到会跳过站点部署并提示先装 V2bX
 - 面板表单为演示，不接后端（contact 页）
 - 模板中的公司名、案例、数据均为示例内容，正式对外前应替换
 - `templates/site/`（原始单模板）保留兼容，`app.py` 优先使用 `templates/sites/`
+- `narrow_v2bx()` 写的 systemd dropin 只处理 `"ListenIP": "::"` 这一种写法；
+  若 V2bX 重启后改回 `0.0.0.0`，dropin 兜不住，需要手工检查
+- 收窄监听会 `systemctl restart V2bX`，代理会短暂中断（配置已备份，可用面板回滚）
+
+## 9. 安装链路验证记录
+
+在沙箱里用**真实 Nginx 1.24 + 模拟 V2bX 配置**跑通了完整 `install.sh`（systemd/crontab 用桩替代）：
+
+| 项 | 结果 |
+|---|---|
+| 配置语法 `nginx -t` | ✅ 通过 |
+| 端口绑定 | ✅ 绑 `公网IP:443`，未绑 `0.0.0.0` |
+| 站点首页 | ✅ 200 |
+| 代理路径 `/index`（浏览器） | ✅ 200，返回站点首页 |
+| 静态资源 css/img | ✅ 200 |
+| 面板反向代理 | ✅ 200，可登录、读状态 |
+| HTTP → HTTPS | ✅ 301 |
+| 404 页 | ✅ 404 |
+| 面板切换模板重新部署 | ✅ 14 项自检全 OK |
+| 上传 zip 覆盖站点 | ✅ |
+| 非 443 端口（8443/2053） | ✅ 语法通过，301 带端口 |
+
+本次修掉的三个安装级 bug（都有回归断言）：
+
+1. `cmd_init` 收尾用旧 `cfg` 覆盖磁盘配置 → 装完不打印面板地址、状态缺域名
+2. `admin_path` 未先落盘就调 `do_deploy` → Nginx 配置缺面板段，面板必然 404
+3. 模板 `meta.json` 被拷进站点根目录 → 线上可公开访问到模板元信息
+
+### 复现验证的命令
+
+```bash
+# 造一个最小 V2bX 环境（域名 + 自签证书即可）
+mkdir -p /etc/V2bX
+cat > /etc/V2bX/config.json <<'EOF'
+{"Nodes":[{"Core":"sing","NodeID":7,"NodeType":"vless","ListenIP":"0.0.0.0",
+"CertConfig":{"CertDomain":"demo.example.com","CertFile":"/etc/V2bX/fullchain.cer","KeyFile":"/etc/V2bX/privkey.key"}}]}
+EOF
+openssl req -x509 -newkey rsa:2048 -nodes -days 90 -subj "/CN=demo.example.com" \
+  -keyout /etc/V2bX/privkey.key -out /etc/V2bX/fullchain.cer
+
+bash install.sh --path /index --port 443 --password test1234
+curl -sk --resolve demo.example.com:443:<本机IP> https://demo.example.com/ | head
+```
