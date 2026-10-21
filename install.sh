@@ -4,7 +4,7 @@
 #  V2bX(sing-box) 与网站共存部署面板
 #
 #  一键安装（推荐，参数全写在命令里）：
-#    curl -fsSL https://raw.githubusercontent.com/__REPO__/main/install.sh \
+#    curl -fsSL https://raw.githubusercontent.com/minerchu/hkbt-deploy/main/install.sh \
 #      | bash -s -- --path /index --port 443 --password 你的密码
 #
 #  本地安装：
@@ -17,7 +17,7 @@
 # ============================================================
 set -e
 
-REPO="__REPO__"
+REPO="minerchu/hkbt-deploy"
 TARBALL="https://github.com/${REPO}/archive/refs/heads/main.tar.gz"
 
 RED='\033[0;31m'; GRN='\033[0;32m'; YEL='\033[0;33m'
