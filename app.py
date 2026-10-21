@@ -20,6 +20,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import zipfile
 from datetime import datetime
@@ -338,6 +339,51 @@ def backup(tag):
 
 
 SITE_TPL = os.path.join(BASE, "templates", "site")
+SITES_TPL = os.path.join(BASE, "templates", "sites")
+DEFAULT_TEMPLATE = "trade"
+
+
+def list_templates():
+    """扫描 templates/sites/<key>/meta.json，返回可选模板列表（按名称排序）"""
+    out = []
+    if not os.path.isdir(SITES_TPL):
+        return out
+    for key in sorted(os.listdir(SITES_TPL)):
+        d = os.path.join(SITES_TPL, key)
+        mp = os.path.join(d, "meta.json")
+        if not (os.path.isdir(d) and os.path.exists(mp)):
+            continue
+        try:
+            with open(mp, encoding="utf-8") as f:
+                m = json.load(f)
+        except Exception:
+            continue
+        out.append({
+            "key": key,
+            "name": m.get("name", key),
+            "industry": m.get("industry", ""),
+            "variant": m.get("variant", ""),
+            "default_brand": m.get("default_brand", ""),
+            "pages": m.get("pages", 0),
+        })
+    return out
+
+
+def template_dir(key):
+    """解析模板目录；key 非法或不存在时回落到默认模板"""
+    key = re.sub(r"[^a-z0-9_-]", "", (key or "").lower())
+    if key:
+        d = os.path.join(SITES_TPL, key)
+        if os.path.isdir(d):
+            return d, key
+    if os.path.isdir(SITES_TPL):
+        keys = sorted(os.listdir(SITES_TPL))
+        if DEFAULT_TEMPLATE in keys:
+            return os.path.join(SITES_TPL, DEFAULT_TEMPLATE), DEFAULT_TEMPLATE
+        if keys:
+            return os.path.join(SITES_TPL, keys[0]), keys[0]
+    # 兼容旧布局
+    return SITE_TPL, "trade"
 
 
 def default_brand(domain):
@@ -350,13 +396,24 @@ def default_brand(domain):
     return seg.upper() if len(seg) <= 4 else (seg[:1].upper() + seg[1:])
 
 
-def generate_default_site(brand, domain, site_dir):
-    """用内置模板生成一个内容完整的站点（多页面 + 配图）"""
-    if not os.path.isdir(SITE_TPL):
-        return False, "内置站点模板缺失：%s" % SITE_TPL
+def generate_default_site(brand, domain, site_dir, template=None):
+    """用选定模板生成站点，替换品牌与域名占位符"""
+    src, key = template_dir(template)
+    if not os.path.isdir(src):
+        return False, "站点模板缺失：%s" % src
     if os.path.exists(site_dir):
         shutil.rmtree(site_dir)
-    shutil.copytree(SITE_TPL, site_dir)
+    shutil.copytree(src, site_dir)
+
+    # 模板自带的行业默认品牌（用于替换），域名统一占位
+    old_brand = "HKBT"
+    mp = os.path.join(src, "meta.json")
+    if os.path.exists(mp):
+        try:
+            with open(mp, encoding="utf-8") as f:
+                old_brand = json.load(f).get("default_brand") or old_brand
+        except Exception:
+            pass
 
     pages = imgs = 0
     for root, _, files in os.walk(site_dir):
@@ -366,12 +423,14 @@ def generate_default_site(brand, domain, site_dir):
             if low.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
                 imgs += 1
                 continue
-            if not low.endswith((".html", ".css", ".js", ".svg", ".txt")):
+            if not low.endswith((".html", ".css", ".js", ".svg", ".txt", ".json")):
+                continue
+            if f == "meta.json":
                 continue
             try:
                 with open(p, encoding="utf-8", errors="ignore") as fh:
                     s = fh.read()
-                s2 = s.replace("HKBT", brand).replace("hkbt.example", domain)
+                s2 = s.replace(old_brand, brand).replace("hkbt.example", domain)
                 if s2 != s:
                     with open(p, "w", encoding="utf-8") as fh:
                         fh.write(s2)
@@ -381,7 +440,8 @@ def generate_default_site(brand, domain, site_dir):
                 pass
 
     run(["chown", "-R", "www-data:www-data", site_dir])
-    return True, "已生成内置站点：%d 个页面 / %d 张配图，品牌名「%s」" % (pages, imgs, brand)
+    return True, "已生成「%s」模板站点：%d 个页面 / %d 张配图，品牌名「%s」" % (
+        key, pages, imgs, brand)
 
 
 def disable_conflicts(port):
@@ -517,7 +577,7 @@ def verify(domain, port, path, public_ip):
     return checks
 
 
-def do_deploy(domain, port, path, zip_path=None, brand=None):
+def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     """完整部署流程，返回 steps 列表。
     不传 zip 时，用内置模板自动生成一个完整站点。"""
     steps = []
@@ -571,11 +631,12 @@ def do_deploy(domain, port, path, zip_path=None, brand=None):
             return False, steps
     else:
         used_brand = (brand or "").strip() or default_brand(domain)
-        ok, msg = generate_default_site(used_brand, domain, site_dir)
+        ok, msg = generate_default_site(used_brand, domain, site_dir, template)
         if not add("生成站点", ok, msg):
             return False, steps
         cfg0 = load_conf()
         cfg0["brand"] = used_brand
+        cfg0["template"] = template_dir(template)[1]
         save_conf(cfg0)
 
     cfg = load_conf()
@@ -674,11 +735,12 @@ def cmd_init(password, port=None, path=None):
     print("  节点端口   : %s%s" % (port, "" if v["api_ok"] else "  (未从面板确认)"))
     print("  代理路径   : %s" % path)
     print("  公网 IP    : %s" % (ip or "未取到"))
+    print("  站点模板   : %s" % (cfg.get("template") or DEFAULT_TEMPLATE))
     print("  面板入口   : https://%s%s/" % (domain or "<域名>", cfg["admin_path"]))
     print("=" * 62)
 
     if v["installed"] and domain and ip:
-        ok, _steps = do_deploy(domain, port, path, None)
+        ok, _steps = do_deploy(domain, port, path, None, None, cfg.get("template"))
         # 首次部署还没有站点文件，放一个占位首页
         site = DEFAULT_SITE
         os.makedirs(site, exist_ok=True)
@@ -746,8 +808,14 @@ def create_app():
         _, ls, _ = run(["ss", "-tlnp"])
         port = c.get("port") or v["port"] or "443"
         site = c.get("site_dir", DEFAULT_SITE)
-        deployed = os.path.exists(os.path.join(site, "index.html")) and \
-            not ("尚未部署" in open(os.path.join(site, "index.html"), encoding="utf-8", errors="ignore").read()[:2000])
+        idx = os.path.join(site, "index.html")
+        deployed = False
+        if os.path.exists(idx):
+            try:
+                with open(idx, encoding="utf-8", errors="ignore") as fh:
+                    deployed = "尚未部署" not in fh.read()[:2000]
+            except Exception:
+                deployed = True
         return jsonify({
             "ok": True, "login": True,
             "panel": {
@@ -759,7 +827,9 @@ def create_app():
                 "brand": c.get("brand") or default_brand(c.get("domain") or v["domain"] or ""),
                 "admin_path": c.get("admin_path", ""),
                 "site_deployed": deployed,
+                "template": c.get("template") or DEFAULT_TEMPLATE,
             },
+            "templates": list_templates(),
             "v2bx": {
                 "installed": v["installed"], "core": v["core"],
                 "listen_ip": v["listen_ip"], "node_id": v["node_id"],
@@ -784,7 +854,8 @@ def create_app():
         if f and f.filename:
             tmp = os.path.join(tempfile.gettempdir(), "hkbt-upload-%s.zip" % secrets.token_hex(4))
             f.save(tmp)
-        ok, steps = do_deploy(domain, port, path, tmp, brand)
+        template = (request.form.get("template") or "").strip()
+        ok, steps = do_deploy(domain, port, path, tmp, brand, template)
         if tmp and os.path.exists(tmp):
             os.remove(tmp)
         return jsonify({"ok": ok, "steps": steps})

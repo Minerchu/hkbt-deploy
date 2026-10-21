@@ -1,0 +1,43 @@
+/* ===== editorial：杂志风 · 衬线标题 · 奶油纸感 ===== */
+:root{
+  --accent:#B0714F;
+  --accent-deep:#8A5236;
+  --accent-soft:#EFDFD3;
+  --bg:#FBF7F2;
+  --bg2:#F3EAE0;
+  --ink:#1C1714;
+  --ink-2:#3D342D;
+  --muted:#7C6E62;
+  --line:#E7D9CA;
+  --card-bg:#FFFDFA;
+  --nav-bg:rgba(251,247,242,.86);
+  --badge-bg:#1C1714;
+  --cta-bg:#1C1714;
+  --foot-bg:#171310;
+  --foot-ink:#F5EDE3;
+  --foot-muted:rgba(245,237,227,.52);
+  --foot-line:rgba(245,237,227,.13);
+  --glow:rgba(176,113,79,.13);
+  --shadow:0 18px 44px rgba(60,42,28,.10);
+  --radius:3px;
+  --radius-sm:2px;
+  --max:1240px;
+  --font-h:"Noto Serif SC","Noto Serif CJK SC","Source Han Serif SC","Songti SC",STSong,"Times New Roman",serif;
+  --font-b:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+body{letter-spacing:.005em}
+h1,h2,h3,h4{letter-spacing:-.005em}
+.nav-links a{font-size:14px;letter-spacing:.02em}
+.hero-meta{border-top:1px solid var(--line)}
+.sec-head h2{letter-spacing:-.015em}
+.biz-body h3,.case-body h3,.art-body h3{letter-spacing:0}
+.marquee div{font-style:italic;opacity:.85}
+.biz{border-radius:0}
+.hero-figure img{border:1px solid var(--line);padding:10px;background:#fff;height:500px}
+.article-cover{border:1px solid var(--line);padding:8px;background:#fff;height:auto;max-height:460px;object-fit:cover}
+.stats{border-radius:0}
+.stat{border-radius:0}
+.case-body blockquote{font-style:italic}
+.cta-band .cta-in h2{letter-spacing:-.01em}
+.term-block h3{letter-spacing:0}
+@media(max-width:720px){.hero-figure img{height:300px;padding:6px}}

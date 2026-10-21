@@ -1,0 +1,78 @@
+/* ===== tech：现代科技 · 直角 · 网格 · 等宽标签 ===== */
+:root{
+  --accent:#0E7C86;
+  --accent-deep:#095E66;
+  --accent-soft:#D6EDEF;
+  --bg:#F7F9FA;
+  --bg2:#EDF2F4;
+  --ink:#0C1216;
+  --ink-2:#2C3A40;
+  --muted:#667A82;
+  --line:#D8E0E4;
+  --card-bg:#FFFFFF;
+  --nav-bg:rgba(247,249,250,.9);
+  --badge-bg:#0C1216;
+  --cta-bg:#0C1216;
+  --foot-bg:#0A0F12;
+  --foot-ink:#E9F1F3;
+  --foot-muted:rgba(233,241,243,.5);
+  --foot-line:rgba(233,241,243,.12);
+  --glow:rgba(14,124,134,.14);
+  --shadow:0 16px 40px rgba(12,18,22,.08);
+  --radius:2px;
+  --radius-sm:2px;
+  --max:1220px;
+  --font-h:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-b:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei","Hiragino Sans GB",-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+body{
+  background-image:linear-gradient(rgba(12,18,22,.028) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(12,18,22,.028) 1px,transparent 1px);
+  background-size:56px 56px;
+}
+h1{font-weight:700;letter-spacing:-.03em;line-height:1.12}
+.sec-head h2{font-weight:700;letter-spacing:-.025em}
+.eyebrow{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:10.5px;letter-spacing:.22em;
+  border:1px solid var(--accent);padding:4px 10px;color:var(--accent);background:rgba(255,255,255,.6)}
+.eyebrow::before{display:none}
+.sec-tag{font-family:"SFMono-Regular",Menlo,Consolas,monospace;letter-spacing:.2em;font-size:10.5px}
+.biz-no,.step-no,.tl-year,.dl-ico{font-family:"SFMono-Regular",Menlo,Consolas,monospace}
+.logo-mark{border-radius:0;font-family:"SFMono-Regular",Menlo,Consolas,monospace}
+.nav-cta{border-radius:0;font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:12.5px;
+  letter-spacing:.1em;text-transform:uppercase;padding:11px 20px}
+.btn{border-radius:0;font-size:13px;letter-spacing:.06em}
+.biz,.case-card,.art-card,.contact-form,.track-box,.dl-card,.rel-item{border-radius:0}
+.biz:hover,.case-card:hover,.art-card:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+.biz-img{position:relative}
+.biz-img::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,transparent 60%,rgba(12,18,22,.35))}
+.hero-figure img{height:500px;border-radius:0;filter:saturate(.92) contrast(1.04)}
+.hero-figure::before{content:"";position:absolute;inset:-10px -10px auto auto;width:90px;height:90px;
+  border-top:2px solid var(--accent);border-right:2px solid var(--accent);z-index:2}
+.hero-badge{border-radius:0;background:var(--accent)}
+.hero-badge b{font-family:"SFMono-Regular",Menlo,Consolas,monospace;letter-spacing:.16em}
+.stats{background:transparent;border:0;gap:0;border-top:2px solid var(--ink);border-radius:0}
+.stat{background:transparent;border-right:1px solid var(--line);text-align:left;padding:30px 26px}
+.stat:last-child{border-right:0}
+.stat b{color:var(--ink);font-family:"SFMono-Regular",Menlo,Consolas,monospace;letter-spacing:-.02em}
+.stat b::before{content:"▍";color:var(--accent);font-size:.6em;vertical-align:middle;margin-right:6px}
+.process{border-top:2px solid var(--ink)}
+.step-no{color:var(--accent)}
+.case-body blockquote{border-left:2px solid var(--accent);font-style:normal}
+.val{background:var(--card-bg);border-left:2px solid var(--accent)}
+.val-grid{gap:1px;background:var(--line);border:1px solid var(--line)}
+.certs span{border-radius:0;font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:11px}
+.cta-band{background:var(--cta-bg);position:relative;overflow:hidden}
+.cta-band::before{content:"";position:absolute;inset:0;
+  background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px);
+  background-size:44px 44px}
+.cta-band .wrap{position:relative}
+.cta-band .btn-primary{background:var(--accent);color:#fff}
+.marquee div{font-family:"SFMono-Regular",Menlo,Consolas,monospace;font-size:12px;letter-spacing:.08em}
+.marquee{background:var(--bg2)}
+.dl-ico{background:var(--ink);color:#fff}
+.tr-step i{font-family:"SFMono-Regular",Menlo,Consolas,monospace}
+.article-cover{border-radius:0}
+.phero{background:var(--bg2);border-bottom:2px solid var(--ink)}
+.err-code{color:var(--accent);font-family:"SFMono-Regular",Menlo,Consolas,monospace}
+@media(max-width:720px){.stat{border-right:0;border-bottom:1px solid var(--line)}}

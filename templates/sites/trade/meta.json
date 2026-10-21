@@ -1,0 +1,12 @@
+{
+  "key": "trade",
+  "name": "通用商贸",
+  "industry": "国际贸易与供应链服务",
+  "variant": "editorial",
+  "brand": "HKBT",
+  "brand_en": "International Trading",
+  "default_brand": "HKBT",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "HKBT — 国际商贸与全球供应链服务商"
+}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>妆研生物 — 物流查询</title>
+<meta name="description" content="订单进度与物流状态查询">
+<meta property="og:title" content="妆研生物 — 物流查询">
+<meta property="og:description" content="订单进度与物流状态查询">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+<style>:root{--accent:#B0714F;--accent-deep:#8A5236;--accent-soft:#EFDFD3;--bg:#FBF7F2;--bg2:#F3EAE0;--ink:#1C1714;--ink2:#3D342D;--muted:#7C6E62;--line:#E7D9CA}</style>
+</head>
+<body class="v-editorial">
+<nav class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a href="/" class="logo"><span class="logo-mark">妆</span><span>妆研生物<small>DERMACRAFT</small></span></a>
+    <div class="nav-links" id="navlinks"><a href="/index.html">首页</a><a href="/about.html">关于我们</a><a href="/business.html">业务矩阵</a><a href="/cases.html">客户案例</a><a href="/insights.html">市场动态</a><a href="/contact.html">联系我们</a></div>
+    <a href="/contact.html" class="nav-cta">获取方案</a>
+    <button class="nav-toggle" id="navtoggle" aria-label="菜单">☰</button>
+  </div>
+</nav>
+<header class="phero">
+  <div class="wrap">
+    <div class="eyebrow">Tracking</div>
+    <h1>订单与物流查询</h1>
+    <p class="phero-lead">输入打样单号或生产批号，查询当前进度与物流状态。</p>
+  </div>
+</header>
+<section class="sec">
+  <div class="wrap narrow">
+    <div class="track-box">
+      <label>单号查询</label>
+      <div class="track-row">
+        <input type="text" id="trInput" placeholder="例如 DY20260914-0087" value="DY20260914-0087">
+        <button class="btn btn-primary" onclick="hkbtTrack()">查询</button>
+      </div>
+      <div class="track-result" id="trResult"></div>
+      <div class="tr-steps"><div class="tr-step"><span>接单确认</span><i>1</i></div><div class="tr-step"><span>配方打样</span><i>2</i></div><div class="tr-step"><span>测评定版</span><i>3</i></div><div class="tr-step"><span>排产出货</span><i>4</i></div></div>
+    </div>
+    <h2 class="h2s" style="margin-top:56px">合作承运商</h2>
+    <table class="tbl"><thead><tr><th>承运商</th><th>服务范围</th><th>状态</th></tr></thead>
+    <tbody><tr><td>顺丰速运</td><td>顺丰速运</td><td>可查询</td></tr><tr><td>京东物流</td><td>京东物流</td><td>可查询</td></tr><tr><td>德邦快递</td><td>德邦快递</td><td>可查询</td></tr><tr><td>中通快运</td><td>中通快运</td><td>可查询</td></tr></tbody></table>
+    <p class="note">演示站点：查询结果为模拟数据，正式部署后请接入你的物流接口。</p>
+  </div>
+</section>
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="f-brand">
+        <div class="logo"><span class="logo-mark">妆</span><span>妆研生物<small>DERMACRAFT</small></span></div>
+        <p>以研发驱动的化妆品代工伙伴，从配方到成品的一条龙服务。</p>
+        <div class="f-contact"><span>+86 21 6012 8800</span><span>oem@hkbt.example</span></div>
+      </div>
+      <div class="f-col"><h4>代工服务</h4><ul><li>功效配方研发</li><li>功效与安全测评</li><li>灌装生产</li><li>备案合规</li></ul></div><div class="f-col"><h4>关于</h4><ul><li>公司简介</li><li>研发中心</li><li>质量体系</li><li>联系我们</li></ul></div>
+    </div>
+    <div class="foot-bot">
+      <span>© 2026 妆研生物. All rights reserved.</span>
+      <span>化妆品研发与智能制造 · hkbt.example</span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/app.js"></script>
+</body>
+</html>

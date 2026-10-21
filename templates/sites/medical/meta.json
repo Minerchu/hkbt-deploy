@@ -1,0 +1,12 @@
+{
+  "key": "medical",
+  "name": "医疗器械",
+  "industry": "医用耗材与康复器械",
+  "variant": "editorial",
+  "brand": "康泽医疗",
+  "brand_en": "KANGZE MED",
+  "default_brand": "康泽医疗",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "康泽医疗 — 医用耗材与康复器械制造"
+}

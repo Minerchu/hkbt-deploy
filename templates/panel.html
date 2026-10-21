@@ -51,11 +51,16 @@ a:hover{text-decoration:underline}
 /* 表单 */
 .row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:18px}
 label{display:block;font-size:12px;color:#8B93A1;letter-spacing:.1em;text-transform:uppercase;margin-bottom:7px}
-input[type=text],input[type=password]{
+input[type=text],input[type=password],select{
   width:100%;background:#0F1115;border:1px solid #383F4A;color:#E6E8EB;
   padding:11px 13px;font-size:14px;font-family:inherit;border-radius:3px;outline:none;transition:.2s;
 }
-input:focus{border-color:#E53E3E;box-shadow:0 0 0 3px rgba(229,62,62,.12)}
+input:focus,select:focus{border-color:#E53E3E;box-shadow:0 0 0 3px rgba(229,62,62,.12)}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#8B93A1 50%),linear-gradient(135deg,#8B93A1 50%,transparent 50%);
+  background-position:calc(100% - 18px) 50%,calc(100% - 13px) 50%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:38px}
+.tpl-row{display:grid;grid-template-columns:1fr 1.4fr;gap:16px;margin-bottom:18px;align-items:end}
+.tpl-meta{font-size:12.5px;color:#8B93A1;padding-bottom:11px}
+.tpl-meta b{color:#C7CCD4;font-weight:500}
 .hint{font-size:12px;color:#6B7280;margin-top:7px;line-height:1.7}
 
 /* 上传区 */
@@ -153,10 +158,18 @@ input:focus{border-color:#E53E3E;box-shadow:0 0 0 3px rgba(229,62,62,.12)}
       </div>
     </div>
 
+    <div class="tpl-row">
+      <div>
+        <label>站点模板</label>
+        <select id="fTemplate"></select>
+      </div>
+      <div class="tpl-meta" id="tplMeta">选择行业模板，生成对应风格的 13 页站点</div>
+    </div>
+
     <div style="background:#13161C;border:1px solid #262B35;border-left:2px solid #48BB78;padding:14px 16px;font-size:12.5px;color:#8B93A1;line-height:1.8;margin-bottom:18px">
       <b style="color:#68D391">不上传文件也会自动生成完整网站</b><br>
-      内置模板包含 13 个页面（首页 / 关于 / 业务 / 案例 / 洞察 / 联系 / 物流查询 / 单据下载 / 条款 / 3 篇文章）
-      与 20 张配图，会按你填的网站名称自动生成。
+      内置 11 套模板（通用商贸 + 化妆品 / 汽车零部件 / 化工 / 食品 / 物流 / 电子 / 纺织 / 家居 / 机械 / 医疗），
+      每套 13 个页面与 6–20 张配图，会按你填的网站名称自动替换品牌。
     </div>
 
     <label>自定义站点（可选）</label>
@@ -234,13 +247,41 @@ function loadState(){
     g += cell('Nginx 公网端口', v.nginx_public ? '已接管' : '未接管', v.nginx_public ? 'ok' : 'warn', '');
     g += cell('证书到期', v.cert_expiry || '—', '', '');
     g += cell('站点', p.site_deployed ? '已部署' : '未部署', p.site_deployed ? 'ok' : 'warn', p.last_deploy ? ('上次 '+p.last_deploy) : '');
+    var tpls = d.templates || [];
+    var cur = tpls.filter(function(t){ return t.key === p.template; })[0];
+    g += cell('站点模板', cur ? cur.name : (p.template || '—'), '', cur ? cur.variant : '');
     document.getElementById('stateGrid').innerHTML = g;
 
     document.getElementById('fDomain').value = p.domain || '';
     document.getElementById('fPort').value = p.port || '';
     document.getElementById('fPath').value = p.path || '';
     document.getElementById('fBrand').value = p.brand || '';
+    fillTemplates(tpls, p.template);
   }).catch(function(){});
+}
+
+function fillTemplates(tpls, current){
+  var sel = document.getElementById('fTemplate');
+  if(!sel) return;
+  if(!tpls || !tpls.length){ sel.innerHTML = '<option value="">（未安装模板）</option>'; return; }
+  var h = '';
+  tpls.forEach(function(t){
+    var label = t.name + (t.industry ? ' · ' + t.industry : '');
+    h += '<option value="'+t.key+'"'+(t.key===current?' selected':'')+'>'+label+'</option>';
+  });
+  sel.innerHTML = h;
+  updateTplMeta();
+  sel.onchange = updateTplMeta;
+}
+
+function updateTplMeta(){
+  var sel = document.getElementById('fTemplate');
+  var box = document.getElementById('tplMeta');
+  if(!sel || !box) return;
+  var t = (S.templates||[]).filter(function(x){ return x.key === sel.value; })[0];
+  if(!t){ box.innerHTML = ''; return; }
+  var style = {editorial:'杂志风', classic:'经典企业', tech:'现代科技'}[t.variant] || t.variant;
+  box.innerHTML = '<b>'+t.name+'</b> · '+style+' · '+t.pages+' 页 · 默认品牌「'+t.default_brand+'」';
 }
 
 function pickFile(inp){
@@ -267,6 +308,8 @@ function doDeploy(){
   fd.append('port', document.getElementById('fPort').value.trim());
   fd.append('path', document.getElementById('fPath').value.trim());
   fd.append('brand', document.getElementById('fBrand').value.trim());
+  var tsel = document.getElementById('fTemplate');
+  if(tsel && tsel.value) fd.append('template', tsel.value);
   var f = document.getElementById('fFile').files[0];
   if(f) fd.append('site', f);
 

@@ -1,0 +1,12 @@
+{
+  "key": "chemical",
+  "name": "化工新材料",
+  "industry": "特种化工与高分子新材料",
+  "variant": "tech",
+  "brand": "聚川新材",
+  "brand_en": "JUCHUAN MATERIALS",
+  "default_brand": "聚川新材",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "聚川新材 — 特种工程塑料与功能化学材料"
+}

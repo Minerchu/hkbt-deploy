@@ -1,0 +1,12 @@
+{
+  "key": "machinery",
+  "name": "工业机械",
+  "industry": "数控装备与非标自动化",
+  "variant": "tech",
+  "brand": "恒重机械",
+  "brand_en": "HENGZHONG",
+  "default_brand": "恒重机械",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "恒重机械 — 数控装备与非标自动化产线"
+}

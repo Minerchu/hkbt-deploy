@@ -1,0 +1,12 @@
+{
+  "key": "cosmetic",
+  "name": "化妆品 OEM",
+  "industry": "化妆品研发与智能制造",
+  "variant": "editorial",
+  "brand": "妆研生物",
+  "brand_en": "DERMACRAFT",
+  "default_brand": "妆研生物",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "妆研生物 — 化妆品 OEM/ODM 研发与智能制造"
+}

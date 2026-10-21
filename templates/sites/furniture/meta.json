@@ -1,0 +1,12 @@
+{
+  "key": "furniture",
+  "name": "家居家具",
+  "industry": "实木家具与空间配套",
+  "variant": "classic",
+  "brand": "木言家居",
+  "brand_en": "MUYAN LIVING",
+  "default_brand": "木言家居",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "木言家居 — 实木家具制造与工程配套"
+}

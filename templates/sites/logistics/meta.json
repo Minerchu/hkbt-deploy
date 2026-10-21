@@ -1,0 +1,12 @@
+{
+  "key": "logistics",
+  "name": "跨境物流",
+  "industry": "跨境物流与海外仓履约",
+  "variant": "classic",
+  "brand": "环球跨境物流",
+  "brand_en": "GLOBALINK",
+  "default_brand": "环球跨境物流",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "环球跨境物流 — 头程运输、海外仓与末端履约"
+}

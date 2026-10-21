@@ -1,0 +1,12 @@
+{
+  "key": "food",
+  "name": "食品加工",
+  "industry": "预制食品与复合调味",
+  "variant": "classic",
+  "brand": "鲜厨食品",
+  "brand_en": "FRESHKITCH",
+  "default_brand": "鲜厨食品",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "鲜厨食品 — 预制菜与复合调味料代工"
+}

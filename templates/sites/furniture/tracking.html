@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>木言家居 — 物流查询</title>
+<meta name="description" content="订单进度与物流状态查询">
+<meta property="og:title" content="木言家居 — 物流查询">
+<meta property="og:description" content="订单进度与物流状态查询">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+<style>:root{--accent:#7A5C3E;--accent-deep:#5C4229;--accent-soft:#EBDFD1;--bg:#FFFFFF;--bg2:#F7F3EE;--ink:#1A1511;--ink2:#3B322A;--muted:#7A6C5E;--line:#E7DED3}</style>
+</head>
+<body class="v-classic">
+<nav class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a href="/" class="logo"><span class="logo-mark">木</span><span>木言家居<small>MUYAN LIVING</small></span></a>
+    <div class="nav-links" id="navlinks"><a href="/index.html">首页</a><a href="/about.html">关于我们</a><a href="/business.html">业务矩阵</a><a href="/cases.html">客户案例</a><a href="/insights.html">市场动态</a><a href="/contact.html">联系我们</a></div>
+    <a href="/contact.html" class="nav-cta">获取方案</a>
+    <button class="nav-toggle" id="navtoggle" aria-label="菜单">☰</button>
+  </div>
+</nav>
+<header class="phero">
+  <div class="wrap">
+    <div class="eyebrow">Tracking</div>
+    <h1>订单与物流查询</h1>
+    <p class="phero-lead">输入订单号，查询生产进度、验货与发运状态。</p>
+  </div>
+</header>
+<section class="sec">
+  <div class="wrap narrow">
+    <div class="track-box">
+      <label>单号查询</label>
+      <div class="track-row">
+        <input type="text" id="trInput" placeholder="例如 MY20260908-0154" value="MY20260908-0154">
+        <button class="btn btn-primary" onclick="hkbtTrack()">查询</button>
+      </div>
+      <div class="track-result" id="trResult"></div>
+      <div class="tr-steps"><div class="tr-step"><span>订单确认</span><i>1</i></div><div class="tr-step"><span>开料生产</span><i>2</i></div><div class="tr-step"><span>涂装组装</span><i>3</i></div><div class="tr-step"><span>验货发运</span><i>4</i></div></div>
+    </div>
+    <h2 class="h2s" style="margin-top:56px">合作承运商</h2>
+    <table class="tbl"><thead><tr><th>承运商</th><th>服务范围</th><th>状态</th></tr></thead>
+    <tbody><tr><td>自有车队</td><td>自有车队</td><td>可查询</td></tr><tr><td>德邦快运</td><td>德邦快运</td><td>可查询</td></tr><tr><td>安能物流</td><td>安能物流</td><td>可查询</td></tr><tr><td>海运整柜</td><td>海运整柜</td><td>可查询</td></tr></tbody></table>
+    <p class="note">演示站点：查询结果为模拟数据，正式部署后请接入你的物流接口。</p>
+  </div>
+</section>
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot-top">
+      <div class="f-brand">
+        <div class="logo"><span class="logo-mark">木</span><span>木言家居<small>MUYAN LIVING</small></span></div>
+        <p>实木家具、板式定制与酒店工程配套的制造伙伴。</p>
+        <div class="f-contact"><span>+86 757 2388 6600</span><span>sales@hkbt.example</span></div>
+      </div>
+      <div class="f-col"><h4>产品</h4><ul><li>实木家具</li><li>板式定制</li><li>软体沙发</li><li>工程配套</li></ul></div><div class="f-col"><h4>关于</h4><ul><li>公司简介</li><li>工厂与工艺</li><li>资质认证</li><li>联系我们</li></ul></div>
+    </div>
+    <div class="foot-bot">
+      <span>© 2026 木言家居. All rights reserved.</span>
+      <span>实木家具与空间配套 · hkbt.example</span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/app.js"></script>
+</body>
+</html>

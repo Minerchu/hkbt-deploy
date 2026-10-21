@@ -1,0 +1,12 @@
+{
+  "key": "auto",
+  "name": "汽车零部件",
+  "industry": "汽车精密零部件制造",
+  "variant": "tech",
+  "brand": "驰盈汽配",
+  "brand_en": "CHIYING AUTO",
+  "default_brand": "驰盈汽配",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "驰盈汽配 — 汽车精密零部件制造与三电系统配套"
+}

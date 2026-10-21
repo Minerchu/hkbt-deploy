@@ -1,0 +1,12 @@
+{
+  "key": "textile",
+  "name": "纺织服装",
+  "industry": "功能性面料与服装制造",
+  "variant": "editorial",
+  "brand": "锦澜纺织",
+  "brand_en": "JINLAN TEXTILE",
+  "default_brand": "锦澜纺织",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "锦澜纺织 — 功能性面料研发与服装制造"
+}

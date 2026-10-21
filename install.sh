@@ -102,6 +102,12 @@ if [[ -d "$SRC/templates/site" ]]; then
   rm -rf /opt/hkbt-deploy/templates/site
   cp -r "$SRC/templates/site" /opt/hkbt-deploy/templates/site
 fi
+if [[ -d "$SRC/templates/sites" ]]; then
+  rm -rf /opt/hkbt-deploy/templates/sites
+  cp -r "$SRC/templates/sites" /opt/hkbt-deploy/templates/sites
+  n_tpl=$(find /opt/hkbt-deploy/templates/sites -maxdepth 2 -name meta.json | wc -l)
+  ok "站点模板已就位（${n_tpl} 套）"
+fi
 chmod 700 /opt/hkbt-deploy/app.py
 [[ -f /opt/hkbt-deploy/config.json ]] || echo '{}' > /opt/hkbt-deploy/config.json
 chmod 600 /opt/hkbt-deploy/config.json

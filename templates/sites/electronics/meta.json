@@ -1,0 +1,12 @@
+{
+  "key": "electronics",
+  "name": "3C 电子制造",
+  "industry": "消费电子与 PCBA 制造",
+  "variant": "tech",
+  "brand": "锐联电子",
+  "brand_en": "RAYLINK",
+  "default_brand": "锐联电子",
+  "default_domain": "hkbt.example",
+  "pages": 13,
+  "title": "锐联电子 — PCBA 与消费电子整机制造"
+}
