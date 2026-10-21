@@ -52,8 +52,15 @@ bash install.sh            # 1. 安装（自动探测你的 V2bX）
 ## 30 秒上手
 
 ```bash
-# 在你的 VPS 上（root）
-cd hkbt-deploy && bash install.sh
+# 在你的 VPS 上（root），一条命令装完
+curl -fsSL https://raw.githubusercontent.com/Minerchu/hkbt-deploy/master/install.sh \
+  | bash -s -- --path /index --port 443 --password 你的密码
+```
+
+也可以先拉下来再装：
+
+```bash
+git clone https://github.com/Minerchu/hkbt-deploy.git && cd hkbt-deploy && bash install.sh
 ```
 
 安装脚本会自动完成：
