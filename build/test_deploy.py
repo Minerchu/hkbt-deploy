@@ -39,6 +39,9 @@ def main():
 
             residual = []
             pages = 0
+            # meta.json 属于模板元数据，不应被部署到站点目录
+            if os.path.exists(os.path.join(out, "meta.json")):
+                residual.append("meta.json 未剔除（会暴露模板信息）")
             for root, _, files in os.walk(out):
                 for f in files:
                     if not f.endswith((".html", ".css", ".js", ".svg", ".txt")):
@@ -70,6 +73,22 @@ def main():
     if k != app.DEFAULT_TEMPLATE:
         print("FAIL 未回落到默认模板")
         bad += 1
+
+    # 初始化收尾不能覆盖 do_deploy 写入的 domain/brand/template
+    disk = {"domain": "hai-lian.com", "brand": "海联实业", "template": "trade",
+            "port": "443", "path": "/index"}
+    orig = app.load_conf
+    app.load_conf = lambda: dict(disk)
+    try:
+        merged = app.merge_init_conf({"admin_path": "/__x", "salt": "s"})
+    finally:
+        app.load_conf = orig
+    lost = [x for x in ("domain", "brand", "template") if not merged.get(x)]
+    if lost:
+        print("FAIL 初始化收尾丢失字段：%s（装完不会打印面板地址）" % "、".join(lost))
+        bad += 1
+    else:
+        print("初始化收尾保留 domain/brand/template")
 
     print("\n%s" % ("全部通过" if bad == 0 else "%d 项失败" % bad))
     return 1 if bad else 0

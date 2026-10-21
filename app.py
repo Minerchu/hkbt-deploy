@@ -404,6 +404,9 @@ def generate_default_site(brand, domain, site_dir, template=None):
     if os.path.exists(site_dir):
         shutil.rmtree(site_dir)
     shutil.copytree(src, site_dir)
+    # meta.json 只是模板元数据，不该出现在线上站点里（会被直接访问到）
+    if os.path.exists(os.path.join(site_dir, "meta.json")):
+        os.remove(os.path.join(site_dir, "meta.json"))
 
     # 模板自带的行业默认品牌（用于替换），域名统一占位
     old_brand = "HKBT"
@@ -658,7 +661,8 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     add("重载 Nginx", True, "已生效")
 
     time.sleep(2)
-    for name, okk, detail in verify(domain, port, path, ip):
+    checks = verify(domain, port, path, ip)
+    for name, okk, detail in checks:
         add("验证 · " + name, okk, detail)
 
     cfg.update({"brand": cfg.get("brand") or default_brand(domain),
@@ -666,6 +670,13 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
                 "site_dir": site_dir, "public_ip": ip,
                 "last_deploy": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     save_conf(cfg)
+
+    # 配置已落盘，但站点本机自检打不开时不能报成功，否则用户装完找不到问题
+    site_ok = next((o for n, o, _ in checks if n == "网站首页 /"), False)
+    if not site_ok:
+        add("部署结果", False,
+            "配置已写入，但本机访问站点失败。常见原因：域名未解析到本机、%s 端口被防火墙/安全组拦截、证书与域名不匹配" % port)
+        return False, steps
     return True, steps
 
 
@@ -707,6 +718,16 @@ def do_rollback():
 
 
 # ------------------------------------------------------------------ CLI 初始化
+def merge_init_conf(cfg):
+    """初始化收尾用：以磁盘为准，只补本次生成的字段。
+    do_deploy 会写入 domain/brand/template，不能用开头加载的旧 cfg 覆盖掉。"""
+    disk = load_conf()
+    for k in ("admin_path", "salt", "secret_key", "password_hash"):
+        if cfg.get(k):
+            disk[k] = cfg[k]
+    return disk
+
+
 def cmd_init(password, port=None, path=None):
     os.makedirs(BASE, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -756,10 +777,12 @@ def cmd_init(password, port=None, path=None):
                         "</div></body></html>")
             run(["chown", "-R", "www-data:www-data", site])
             run(["systemctl", "reload", "nginx"])
-        print("  初始部署   : %s" % ("成功" if ok else "部分失败，请查看面板"))
+        print("  初始部署   : %s" % ("成功" if ok else "已写入配置但自检未通过，原因见上方 FAIL 行"))
     else:
         print("  初始部署   : 跳过（未检测到 V2bX 或缺少域名/IP）")
 
+    # 以磁盘为准再合并：do_deploy 已写入 domain/brand/template，不能用开头加载的旧 cfg 覆盖
+    cfg = merge_init_conf(cfg)
     save_conf(cfg)
     print("\n完成。启动服务后访问上面的面板入口。\n")
     return cfg
