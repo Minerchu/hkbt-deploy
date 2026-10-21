@@ -11,10 +11,13 @@ Nginx 终结 TLS，按 `Upgrade` 头把 WebSocket 流量转发给 sing-box，普
 核心约束（踩过的坑，已固化在 `app.py`）：
 
 - sing-box 没有 Xray 的 `fallbacks`，不能做路径回落，必须由 Nginx 分流
-- Nginx 必须绑**公网 IP**，不能绑 `0.0.0.0`，否则与 `127.0.0.1:<port>` 冲突（EADDRINUSE）
+- **对外端口必须 ≠ 代理端口**。同一 `IP:端口` 只能一个进程监听，`0.0.0.0:x` 与 `127.0.0.1:x` 也互斥。填成一样会让 Nginx 绑不上，旧配置继续跑但面板地址已改，表现为整站和面板一起打不开
+- 代理在独立端口时，Nginx 绑 `0.0.0.0`（NAT 机器上公网 IP 不在网卡，绑它会直接失败）；同端口场景才需要绑具体地址
 - 证书复用 V2bX 那份（`/etc/V2bX/fullchain.cer` + `cert.key`）
 - `http2 on;` 需要 Nginx ≥ 1.25.1，旧版退回 `listen ... ssl http2;`
 - 远端默认分支是 **master**，不是 main
+
+更细的实战排查（9 个真实故障，含验证命令）见 [TROUBLESHOOTING.md](TROUBLESHOOTING.md)。
 
 ## 2. 当前状态
 
