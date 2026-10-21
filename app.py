@@ -140,6 +140,42 @@ def valid_path(p):
     return bool(p) and p.startswith("/")and "//" not in p and len(p) < 128
 
 
+def port_owner(port):
+    """返回监听该端口的进程名，无人监听返回 None。
+    Nginx 自己占着端口时返回 'nginx'，用于区分「重复部署」和「被别人占用」。"""
+    rc, out, _ = run(["ss", "-lntp"])
+    for line in out.splitlines():
+        if re.search(r":%s\s" % re.escape(str(port)), line):
+            m = re.search(r'users:\(\("([^"]+)"', line)
+            return (m.group(1) if m else "unknown").split(":")[0]
+    return None
+
+
+def proxy_listen_port():
+    """面板 API 取不到端口时，直接从进程监听表里找代理端口"""
+    rc, out, _ = run(["ss", "-lntp"])
+    for line in out.splitlines():
+        if not re.search(r"V2bX|sing-box|xray", line):
+            continue
+        m = re.search(r":(\d+)\s", line)
+        if m and m.group(1) != "8899":
+            return m.group(1)
+    return ""
+
+
+def port_conflict(port, proxy_port):
+    """判断 Nginx 对外端口能否绑定，返回 (是否冲突, 原因)"""
+    if proxy_port and str(proxy_port) == str(port):
+        return True, ("对外端口不能填代理端口 %s：该端口已被 V2bX 占用，Nginx 绑不上，"
+                      "网站和面板会一起失效。请把对外端口改成 443，代理继续留在 %s，"
+                      "由 Nginx 按路径转发过去。" % (proxy_port, proxy_port))
+    owner = port_owner(port)
+    if owner and owner != "nginx":
+        return True, ("%s 端口已被 %s 占用，Nginx 无法绑定。请换一个空闲端口（推荐 443）"
+                      % (port, owner))
+    return False, ""
+
+
 # ------------------------------------------------------------------ V2bX 探测
 def detect_v2bx():
     """读取 V2bX 配置 + 面板 API，拿到节点真实端口/路径/域名"""
@@ -638,17 +674,25 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     if not v["installed"]:
         return add("环境检测", False, "未检测到 V2bX，本工具目前只支持 V2bX + sing-box"), steps
 
-    # 代理真实端口以面板 API 为准；取不到时退回「与 Nginx 同端口」的假设
-    proxy_port = str(v["port"]) if (v["api_ok"] and v["port"]) else str(port)
+    # 代理真实端口以面板 API 为准；取不到时从进程监听表兜底
+    proxy_port = str(v["port"]) if v["api_ok"] and v["port"] else proxy_listen_port()
+    if not proxy_port:
+        return add("环境检测", False,
+                   "读不到代理监听端口（面板 API 无响应，进程表里也没有 V2bX/sing-box），"
+                   "请确认代理正在运行"), steps
     if v["api_ok"] and v["path"] and v["path"] != path:
         return add("路径一致性", False,
                    "面板节点实际路径为 %s，你填的是 %s。路径必须完全一致，否则客户端连不上"
                    % (v["path"], path))
-    if proxy_port != str(port):
-        add("端口映射", True, "代理实际监听 %s，Nginx 对外 %s，按路径转发到 127.0.0.1:%s"
-            % (proxy_port, port, proxy_port))
-    else:
-        add("端口映射", True, "代理与 Nginx 同端口 %s（靠绑定地址区分）" % port)
+
+    # Nginx 与代理不能共用同一个 TCP 端口：0.0.0.0:x 与 127.0.0.1:x 在 Linux 上互相排斥，
+    # 后启动的一方直接 bind 失败。整站和面板都挂在同一个 server 上，一旦失败就全挂。
+    conflict, why = port_conflict(port, proxy_port)
+    if conflict:
+        return add("端口冲突", False, why), steps
+
+    add("端口映射", True, "代理实际监听 127.0.0.1:%s，Nginx 对外 %s，按路径转发"
+        % (proxy_port, port))
 
     ip = public_ip()
     if not ip:
@@ -668,13 +712,8 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     else:
         add("清理冲突配置", True, "无冲突配置")
 
-    # 只有代理与 Nginx 抢同一个端口时才需要收窄；独立端口（如 21311）保持原样
-    if proxy_port == str(port):
-        ok, msg = narrow_v2bx()
-        if not add("收窄 sing-box 监听", ok, msg):
-            return False, steps
-    else:
-        add("收窄 sing-box 监听", True, "代理在独立端口 %s，跳过收窄（不影响 443 分流）" % proxy_port)
+    # 代理在独立端口时不抢端口，收窄反而会让客户端断连，跳过
+    add("收窄 sing-box 监听", True, "代理在独立端口 %s，无需收窄" % proxy_port)
 
     site_dir = DEFAULT_SITE
     if zip_path:

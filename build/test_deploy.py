@@ -90,6 +90,49 @@ def main():
     else:
         print("初始化收尾保留 domain/brand/template")
 
+    # 端口冲突：对外端口 = 代理端口时必须拒绝，否则 Nginx 绑不上、整站带面板一起挂
+    ok, why = app.port_conflict(21311, 21311)
+    if not ok or "21311" not in why:
+        print("FAIL 未拦截「对外端口 = 代理端口」")
+        bad += 1
+    else:
+        print("端口冲突拦截：对外端口 = 代理端口")
+
+    orig_owner = app.port_owner
+    app.port_owner = lambda p: "V2bX"
+    try:
+        ok, why = app.port_conflict(21311, 9999)
+    finally:
+        app.port_owner = orig_owner
+    if not ok or "V2bX" not in why:
+        print("FAIL 未拦截「端口被其他进程占用」")
+        bad += 1
+    else:
+        print("端口冲突拦截：端口已被 V2bX 占用")
+
+    app.port_owner = lambda p: "nginx"
+    try:
+        ok, _ = app.port_conflict(443, 21311)
+    finally:
+        app.port_owner = orig_owner
+    if ok:
+        print("FAIL 重复部署被误判为端口冲突")
+        bad += 1
+    else:
+        print("重复部署放行：端口由 nginx 自己持有")
+
+    # 分离端口时 Nginx 绑 0.0.0.0（NAT 机上公网 IP 不在网卡，绑死会失败）
+    conf = app.gen_nginx("hai-lian.com", "443", "/davsvbfb", "/var/www/hkbt",
+                         "132.226.145.154", "/tmp/c.cer", "/tmp/c.key", "/__x", "21311")
+    for want, desc in (("listen 0.0.0.0:443", "对外 443 绑 0.0.0.0"),
+                       ("proxy_pass https://127.0.0.1:21311", "按路径转发到代理"),
+                       ("location /__x/", "面板入口")):
+        if want not in conf:
+            print("FAIL 配置缺少：%s" % desc)
+            bad += 1
+        else:
+            print("配置校验：%s" % desc)
+
     print("\n%s" % ("全部通过" if bad == 0 else "%d 项失败" % bad))
     return 1 if bad else 0
 
