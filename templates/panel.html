@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HKBT Deploy — 站点部署面板</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  font-family:"Microsoft YaHei UI","Microsoft YaHei",-apple-system,"Segoe UI",Roboto,sans-serif;
+  background:#0F1115;color:#E6E8EB;font-size:14px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1080px;margin:0 auto;padding:32px 24px 64px}
+a{color:#E53E3E;text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* 顶部 */
+.top{display:flex;align-items:center;justify-content:space-between;padding-bottom:22px;border-bottom:1px solid #262B35;margin-bottom:28px}
+.brand{display:flex;align-items:center;gap:12px}
+.mark{width:36px;height:36px;background:#E53E3E;color:#fff;display:grid;place-items:center;font-size:17px;font-weight:700;border-radius:3px}
+.brand h1{font-size:19px;font-weight:600;letter-spacing:.01em}
+.brand span{display:block;font-size:11px;color:#8B93A1;letter-spacing:.16em;text-transform:uppercase}
+.top .right{display:flex;align-items:center;gap:14px;font-size:13px;color:#8B93A1}
+.btn{
+  background:#E53E3E;color:#fff;border:0;padding:11px 22px;font-size:14px;cursor:pointer;
+  border-radius:3px;font-family:inherit;transition:.2s;letter-spacing:.02em;
+}
+.btn:hover{background:#C53030}
+.btn:disabled{background:#3A4048;color:#8B93A1;cursor:not-allowed}
+.btn-ghost{background:transparent;border:1px solid #383F4A;color:#C7CCD4}
+.btn-ghost:hover{background:#1A1E26;border-color:#E53E3E;color:#fff}
+.btn-sm{padding:8px 16px;font-size:13px}
+
+/* 卡片 */
+.card{background:#171A21;border:1px solid #262B35;border-radius:4px;padding:24px;margin-bottom:20px}
+.card h2{font-size:15px;font-weight:600;margin-bottom:4px;display:flex;align-items:center;gap:9px}
+.card h2::before{content:"";width:3px;height:14px;background:#E53E3E}
+.card .sub{font-size:12.5px;color:#8B93A1;margin-bottom:20px;padding-left:12px}
+
+/* 状态网格 */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:1px;background:#262B35;border:1px solid #262B35}
+.cell{background:#171A21;padding:16px 18px}
+.cell .k{font-size:11px;color:#8B93A1;letter-spacing:.14em;text-transform:uppercase}
+.cell .v{font-size:16px;margin-top:6px;word-break:break-all;font-weight:500}
+.cell .v.ok{color:#48BB78}
+.cell .v.bad{color:#E53E3E}
+.cell .v.warn{color:#ECC94B}
+.cell .note{font-size:11.5px;color:#6B7280;margin-top:5px}
+
+/* 表单 */
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:18px}
+label{display:block;font-size:12px;color:#8B93A1;letter-spacing:.1em;text-transform:uppercase;margin-bottom:7px}
+input[type=text],input[type=password]{
+  width:100%;background:#0F1115;border:1px solid #383F4A;color:#E6E8EB;
+  padding:11px 13px;font-size:14px;font-family:inherit;border-radius:3px;outline:none;transition:.2s;
+}
+input:focus{border-color:#E53E3E;box-shadow:0 0 0 3px rgba(229,62,62,.12)}
+.hint{font-size:12px;color:#6B7280;margin-top:7px;line-height:1.7}
+
+/* 上传区 */
+.drop{
+  border:1px dashed #383F4A;border-radius:4px;padding:32px;text-align:center;
+  color:#8B93A1;transition:.2s;cursor:pointer;background:#13161C;
+}
+.drop:hover,.drop.over{border-color:#E53E3E;background:#1A1E26;color:#E6E8EB}
+.drop b{display:block;font-size:14px;color:#E6E8EB;margin-bottom:6px}
+.drop .file{color:#48BB78;font-size:13px;margin-top:10px}
+
+/* 步骤结果 */
+.steps{margin-top:20px;border-top:1px solid #262B35;padding-top:18px}
+.step{display:flex;gap:12px;padding:9px 0;font-size:13.5px;align-items:flex-start}
+.step .ico{flex:0 0 20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;margin-top:1px}
+.step.ok .ico{background:rgba(72,187,120,.16);color:#48BB78}
+.step.bad .ico{background:rgba(229,62,62,.16);color:#E53E3E}
+.step .nm{color:#E6E8EB;font-weight:500}
+.step .msg{color:#8B93A1;font-size:12.5px;word-break:break-all}
+.result{padding:13px 16px;border-radius:3px;margin-top:16px;font-size:13.5px}
+.result.ok{background:rgba(72,187,120,.1);border:1px solid rgba(72,187,120,.3);color:#68D391}
+.result.bad{background:rgba(229,62,62,.1);border:1px solid rgba(229,62,62,.3);color:#FC8181}
+
+/* 登录 */
+.login{max-width:380px;margin:14vh auto;background:#171A21;border:1px solid #262B35;border-radius:4px;padding:36px}
+.login .brand{justify-content:center;margin-bottom:26px}
+.login .desc{font-size:12.5px;color:#8B93A1;text-align:center;margin-bottom:22px}
+.login .btn{width:100%}
+.err{color:#FC8181;font-size:13px;margin-top:12px;text-align:center;min-height:20px}
+
+.note-box{background:#13161C;border:1px solid #262B35;border-left:2px solid #E53E3E;padding:16px 18px;font-size:12.5px;color:#8B93A1;line-height:1.85}
+.note-box b{color:#C7CCD4}
+.foot{text-align:center;font-size:12px;color:#4B5563;margin-top:32px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="loginView" class="login">
+  <div class="brand"><div class="mark">H</div><div><h1>HKBT Deploy</h1><span>Site Deployment</span></div></div>
+  <p class="desc">请输入安装时设置的面板密码</p>
+  <label>面板密码</label>
+  <input type="password" id="pw" placeholder="••••••••" autocomplete="current-password">
+  <button class="btn" style="margin-top:18px" onclick="doLogin()">登 录</button>
+  <div class="err" id="loginErr"></div>
+</div>
+
+<!-- 控制台 -->
+<div id="mainView" class="wrap hidden">
+  <div class="top">
+    <div class="brand"><div class="mark">H</div><div><h1>HKBT Deploy</h1><span>Site Deployment</span></div></div>
+    <div class="right">
+      <span id="entry"></span>
+      <button class="btn btn-ghost btn-sm" onclick="doLogout()">退出</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>当前状态</h2>
+    <div class="sub">代理程序与网站的共存状态，实时读取服务器</div>
+    <div class="grid" id="stateGrid"></div>
+    <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm" onclick="loadState()">刷新状态</button>
+      <button class="btn btn-ghost btn-sm" onclick="doVerify()">运行自检</button>
+      <button class="btn btn-ghost btn-sm" onclick="doRollback()" style="border-color:#742A2A;color:#FC8181">回滚到上次</button>
+    </div>
+    <div class="steps hidden" id="verifyBox"></div>
+  </div>
+
+  <div class="card">
+    <h2>部署</h2>
+    <div class="sub">填写 vless ws tls 的端口与路径，自动生成网站并完成共存部署</div>
+
+    <div class="row">
+      <div>
+        <label>域名</label>
+        <input type="text" id="fDomain" placeholder="hkbt.netflixcn.de">
+        <div class="hint">自动取自证书，一般不用改</div>
+      </div>
+      <div>
+        <label>端口</label>
+        <input type="text" id="fPort" placeholder="443">
+        <div class="hint">vless ws tls 的监听端口</div>
+      </div>
+      <div>
+        <label>代理路径</label>
+        <input type="text" id="fPath" placeholder="/index">
+        <div class="hint">必须与节点 path 完全一致</div>
+      </div>
+      <div>
+        <label>网站名称</label>
+        <input type="text" id="fBrand" placeholder="HKBT">
+        <div class="hint">留空则由域名自动推导</div>
+      </div>
+    </div>
+
+    <div style="background:#13161C;border:1px solid #262B35;border-left:2px solid #48BB78;padding:14px 16px;font-size:12.5px;color:#8B93A1;line-height:1.8;margin-bottom:18px">
+      <b style="color:#68D391">不上传文件也会自动生成完整网站</b><br>
+      内置模板包含 13 个页面（首页 / 关于 / 业务 / 案例 / 洞察 / 联系 / 物流查询 / 单据下载 / 条款 / 3 篇文章）
+      与 20 张配图，会按你填的网站名称自动生成。
+    </div>
+
+    <label>自定义站点（可选）</label>
+    <div class="drop" id="drop" onclick="document.getElementById('fFile').click()">
+      <b>点击选择 .zip 文件</b>
+      <span>用你自己的站点替换内置模板，留空则用模板</span>
+      <div class="file" id="fileName"></div>
+    </div>
+    <input type="file" id="fFile" accept=".zip" class="hidden" onchange="pickFile(this)">
+    <div class="hint">压缩包需包含 index.html；若只有一层顶层目录会自动提升为根目录</div>
+
+    <button class="btn" style="margin-top:22px" id="deployBtn" onclick="doDeploy()">开始部署</button>
+    <div class="steps hidden" id="deployBox"></div>
+  </div>
+
+  <div class="note-box">
+    <b>工作原理</b><br>
+    sing-box 内核没有 Xray 的 fallbacks，所以工具让 Nginx 终结 TLS 并按 <b>Upgrade 头</b> 分流：
+    带 <b>Upgrade: websocket</b> 的请求转发给 sing-box，普通浏览器访问则返回网站。
+    因此 sing-box 被收窄到 <b>127.0.0.1</b>，Nginx 接管公网端口并复用 V2bX 的证书 —
+    <b>面板、订阅、客户端配置全程零改动</b>。
+  </div>
+
+  <div class="foot">HKBT Deploy · V2bX / sing-box 共存部署工具</div>
+</div>
+
+<script>
+var S = {};
+
+function api(path, opts){
+  return fetch(path, opts).then(function(r){
+    if(r.status === 401){ showLogin(); throw new Error('未登录'); }
+    return r.json();
+  });
+}
+
+function showLogin(){ document.getElementById('loginView').classList.remove('hidden'); document.getElementById('mainView').classList.add('hidden'); }
+function showMain(){ document.getElementById('loginView').classList.add('hidden'); document.getElementById('mainView').classList.remove('hidden'); }
+
+function doLogin(){
+  var pw = document.getElementById('pw').value;
+  var err = document.getElementById('loginErr');
+  err.textContent = '';
+  if(!pw){ err.textContent = '请输入密码'; return; }
+  api('api/login', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password: pw})})
+    .then(function(d){
+      if(d.ok){ showMain(); loadState(); }
+      else { err.textContent = d.msg || '登录失败'; }
+    }).catch(function(){ err.textContent = '请求失败'; });
+}
+
+function doLogout(){
+  fetch('api/logout', {method:'POST'}).then(function(){ showLogin(); });
+}
+
+function cell(k, v, cls, note){
+  return '<div class="cell"><div class="k">'+k+'</div><div class="v '+(cls||'')+'">'+v+'</div>'
+    + (note ? '<div class="note">'+note+'</div>' : '') + '</div>';
+}
+
+function loadState(){
+  api('api/state').then(function(d){
+    if(!d.ok) return;
+    S = d;
+    var p = d.panel, v = d.v2bx;
+    document.getElementById('entry').textContent = p.domain || '';
+    var g = '';
+    g += cell('域名', p.domain || '—', '', '');
+    g += cell('端口', p.port || '—', '', '');
+    g += cell('代理路径', p.path || '—', '', '');
+    g += cell('公网 IP', p.public_ip || '—', '', '');
+    g += cell('代理核心', v.core || '—', v.installed ? 'ok' : 'bad', v.installed ? 'V2bX 已安装' : '未检测到 V2bX');
+    g += cell('面板同步', v.api_ok ? '正常' : '未确认', v.api_ok ? 'ok' : 'warn', v.api_ok ? ('节点 '+v.node_id) : (v.api_msg||''));
+    g += cell('sing-box 监听', v.loopback_only ? '仅本机' : (v.listen_ip || '—'), v.loopback_only ? 'ok' : 'bad', v.loopback_only ? '已收窄' : '需部署后收窄');
+    g += cell('Nginx 公网端口', v.nginx_public ? '已接管' : '未接管', v.nginx_public ? 'ok' : 'warn', '');
+    g += cell('证书到期', v.cert_expiry || '—', '', '');
+    g += cell('站点', p.site_deployed ? '已部署' : '未部署', p.site_deployed ? 'ok' : 'warn', p.last_deploy ? ('上次 '+p.last_deploy) : '');
+    document.getElementById('stateGrid').innerHTML = g;
+
+    document.getElementById('fDomain').value = p.domain || '';
+    document.getElementById('fPort').value = p.port || '';
+    document.getElementById('fPath').value = p.path || '';
+    document.getElementById('fBrand').value = p.brand || '';
+  }).catch(function(){});
+}
+
+function pickFile(inp){
+  if(inp.files && inp.files[0]){
+    document.getElementById('fileName').textContent = '已选择：' + inp.files[0].name;
+  }
+}
+
+function renderSteps(box, steps){
+  var h = '';
+  steps.forEach(function(s){
+    h += '<div class="step ' + (s.ok?'ok':'bad') + '"><span class="ico">' + (s.ok?'✓':'✕') + '</span>'
+      + '<div><div class="nm">'+s.name+'</div><div class="msg">'+s.msg+'</div></div></div>';
+  });
+  box.innerHTML = h;
+  box.classList.remove('hidden');
+}
+
+function doDeploy(){
+  var btn = document.getElementById('deployBtn');
+  var box = document.getElementById('deployBox');
+  var fd = new FormData();
+  fd.append('domain', document.getElementById('fDomain').value.trim());
+  fd.append('port', document.getElementById('fPort').value.trim());
+  fd.append('path', document.getElementById('fPath').value.trim());
+  fd.append('brand', document.getElementById('fBrand').value.trim());
+  var f = document.getElementById('fFile').files[0];
+  if(f) fd.append('site', f);
+
+  btn.disabled = true; btn.textContent = '部署中…';
+  box.innerHTML = '<div class="step"><span class="ico">◌</span><div class="nm">正在部署，请稍候…</div></div>';
+  box.classList.remove('hidden');
+
+  api('api/deploy', {method:'POST', body: fd}).then(function(d){
+    renderSteps(box, d.steps || []);
+    box.insertAdjacentHTML('beforeend',
+      '<div class="result '+(d.ok?'ok':'bad')+'">' + (d.ok ? '部署完成，代理配置未改动，请实测客户端能否联网。' : '部署未全部成功，请根据上面的失败项排查；可用「回滚到上次」恢复。') + '</div>');
+    btn.disabled = false; btn.textContent = '重新部署';
+    loadState();
+  }).catch(function(e){
+    box.innerHTML = '<div class="result bad">请求失败：' + e.message + '</div>';
+    btn.disabled = false; btn.textContent = '重新部署';
+  });
+}
+
+function doVerify(){
+  var box = document.getElementById('verifyBox');
+  box.innerHTML = '<div class="step"><span class="ico">◌</span><div class="nm">正在自检…</div></div>';
+  box.classList.remove('hidden');
+  api('api/verify', {method:'POST'}).then(function(d){
+    var steps = (d.checks||[]).map(function(c){ return {name:c.name, ok:c.ok, msg:c.msg}; });
+    renderSteps(box, steps);
+  }).catch(function(e){ box.innerHTML = '<div class="result bad">'+e.message+'</div>'; });
+}
+
+function doRollback(){
+  if(!confirm('确定回滚到上一次部署前的状态吗？\n这会恢复 V2bX 原始监听并移除站点配置。')) return;
+  var box = document.getElementById('verifyBox');
+  box.innerHTML = '<div class="step"><span class="ico">◌</span><div class="nm">正在回滚…</div></div>';
+  box.classList.remove('hidden');
+  api('api/rollback', {method:'POST'}).then(function(d){
+    renderSteps(box, d.steps || []);
+    loadState();
+  }).catch(function(e){ box.innerHTML = '<div class="result bad">'+e.message+'</div>'; });
+}
+
+// 拖放
+var drop = document.getElementById('drop');
+['dragenter','dragover'].forEach(function(ev){
+  drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('over'); });
+});
+['dragleave','drop'].forEach(function(ev){
+  drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('over'); });
+});
+drop.addEventListener('drop', function(e){
+  var f = e.dataTransfer.files[0];
+  if(f){ document.getElementById('fFile').files = e.dataTransfer.files; document.getElementById('fileName').textContent = '已选择：'+f.name; }
+});
+
+document.getElementById('pw').addEventListener('keydown', function(e){ if(e.key === 'Enter') doLogin(); });
+
+// 启动
+fetch('api/state').then(function(r){
+  if(r.status === 401){ showLogin(); }
+  else { return r.json().then(function(d){ if(d.ok){ showMain(); S=d; loadState(); } else showLogin(); }); }
+}).catch(function(){ showLogin(); });
+</script>
+</body>
+</html>

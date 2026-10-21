@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>海外仓库存健康度怎么算：周转天数与滞销处置框架 — HKBT</title>
+<meta name="description" content="从周转天数、动销率到缺货率，HKBT 数据与风控中心分享海外仓库存健康度的实操评估框架。">
+<meta property="og:title" content="海外仓库存健康度怎么算：周转天数与滞销处置框架 — HKBT">
+<meta property="og:description" content="从周转天数、动销率到缺货率，HKBT 数据与风控中心分享海外仓库存健康度的实操评估框架。">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/assets/style.css">
+
+</head>
+<body class="article-page">
+<nav class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a href="/" class="logo"><span class="logo-mark">H</span><span>HKBT<small>International Trading</small></span></a>
+    <div class="nav-links" id="navlinks"><a href="/">首页</a><a href="/about.html">关于我们</a><a href="/business.html">业务矩阵</a><a href="/cases.html">客户案例</a><a href="/insights.html" class="on">市场动态</a><a href="/contact.html">联系我们</a></div>
+    <a href="/contact.html" class="nav-cta">获取方案</a>
+    <button class="nav-toggle" id="navtoggle" aria-label="菜单">☰</button>
+  </div>
+</nav>
+<header class="article-head">
+  <div class="wrap">
+    <div class="crumb"><a href="/">首页</a> / <a href="/insights.html">市场动态</a> / 库存管理</div>
+    <div class="article-meta"><b>运营实务</b><span>2026 / 07 / 11</span><span>撰文 · HKBT 数据与风控中心</span><span>约 6 分钟阅读</span></div>
+    <h1 style="max-width:18em">海外仓库存健康度怎么算？从周转天数到滞销处置的实操框架</h1>
+    <p class="hero-lead" style="margin-top:24px">库存不是越少越好，也不是越多越安全。真正该盯的是「结构」：哪些 SKU 在贡献周转，哪些在悄悄吃掉仓储费和现金流。</p>
+  </div>
+</header>
+
+<div class="wrap">
+  <figure class="article-hero"><img src="/assets/img/warehouse-pallets.jpg" alt="库存健康度的核心不是总量，而是分布结构"><figcaption style="margin-top:12px;font-size:12.5px;color:var(--muted)">库存健康度的核心不是总量，而是分布结构</figcaption></figure>
+</div>
+
+<article class="wrap">
+  <div class="article-body">
+    <p>我们服务过的客户里，几乎每一家在第一次做库存盘点时都会发现同一件事：卖得好的 SKU 缺货，卖不动的 SKU 占着库位。总库存金额看着正常，结构已经坏了。</p>
+
+<h2>先建立三个基础指标</h2>
+<ul>
+  <li><b>周转天数</b>：当前库存 ÷ 近 30 天日均销量。这是最直观的指标，但要按 SKU 算，不能看整体</li>
+  <li><b>动销率</b>：近 30 天有销量的 SKU 数 ÷ 总 SKU 数。低于 60% 就要警觉</li>
+  <li><b>缺货率</b>：缺货 SKU 数 ÷ 在售 SKU 数。缺货与滞销同时高，说明补货模型失效</li>
+</ul>
+
+<h2>按周转天数分层管理</h2>
+<p>把 SKU 分成四层，每层用不同策略。这是我们认为最容易落地的一种方式：</p>
+<table>
+  <tr><th>层级</th><th>周转天数</th><th>策略</th></tr>
+  <tr><td>健康</td><td>15–45 天</td><td>维持现有补货节奏</td></tr>
+  <tr><td>偏慢</td><td>46–90 天</td><td>暂停补货，观察两周</td></tr>
+  <tr><td>滞销</td><td>91–180 天</td><td>促销、捆绑或调拨至其他市场</td></tr>
+  <tr><td>死库存</td><td>&gt; 180 天</td><td>清仓或销毁，优先释放库位</td></tr>
+</table>
+
+<blockquote>死库存最大的成本不是货值，是它占着的那个库位——那个位置本可以放一个周转 20 天的 SKU。</blockquote>
+
+<h2>一个真实案例</h2>
+<p>某宠物用品客户，SKU 约 240 个，库存周转 68 天。我们做了三件事：</p>
+<ul>
+  <li>把 37 个死库存 SKU 集中清仓，释放约 30% 库位</li>
+  <li>对 52 个偏慢 SKU 停止补货，改为按订单触发</li>
+  <li>对 18 个高频 SKU 提高安全库存，把缺货率从 9% 降到 2%</li>
+</ul>
+<p>三个月后，整体周转天数降到 47 天，仓储费下降约 22%，而销售额没有下滑。</p>
+
+<figure class="figure"><img src="/assets/img/warehouse-aisle.jpg" alt="海外仓货架"><figcaption>库位是有限资源，库存结构优化的本质是库位再分配</figcaption></figure>
+
+<h2>补货模型怎么设</h2>
+<p>我们通常用「安全库存 + 补货点」的简化模型：安全库存覆盖补货周期内的销量波动，补货点在安全库存基础上加一个缓冲。关键在于补货周期要按实际到仓时间算，而不是按船期算——清关与入仓往往还要 5–8 天。</p>
+<p>如果 SKU 数量超过 100 个，建议直接上系统，手工表格在这种量级下一定会失真。</p>
+    <div class="article-tags"><a href="/insights.html">库存</a><a href="/insights.html">海外仓</a><a href="/insights.html">周转</a></div>
+    <div style="margin-top:56px;padding-top:34px;border-top:1px solid var(--line);display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap">
+      <a href="/insights.html" style="font-size:13.5px;color:var(--red)">← 返回全部洞察</a>
+      <a href="/contact.html" style="font-size:13.5px;color:var(--ink);border-bottom:1px solid var(--red);padding-bottom:2px">就这个话题咨询 →</a>
+    </div>
+  </div>
+</article>
+
+<section class="cta">
+  <div class="wrap">
+    <div class="cta-in">
+      <div class="rv">
+        <div class="sec-tag" style="color:#ffb3b6">Talk To Us</div>
+        <h2>这类问题<br>可以直接问我们</h2>
+        <p>如果你的品类正面临法规、成本或库存压力，我们可以基于你的实际数据做一次专项测算。</p>
+        <a href="/contact.html" class="btn">预约商务洽谈 →</a>
+      </div>
+      <div class="cta-side rv">
+        <div><span>Business Hours</span><b>周一至周六 9:00 – 19:00</b></div>
+        <div><span>Response Time</span><b>1 个工作日内回复</b></div>
+        <div><span>Core Markets</span><b>北美 · 欧洲 · 东南亚</b></div>
+      </div>
+    </div>
+  </div>
+</section>
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <div class="foot-logo"><span class="logo-mark">H</span>HKBT</div>
+        <p class="foot-about">HKBT 专注国际贸易与全球供应链服务，以一站式履约能力与本地化团队，为制造企业、品牌方与渠道商提供可测算、可追踪、可交付的跨境贸易方案。</p>
+        <div class="social"><a href="/contact.html" title="商务邮箱">@</a><a href="/tracking.html" title="物流查询">T</a><a href="/insights.html" title="市场动态">I</a><a href="/downloads.html" title="单据下载">D</a></div>
+      </div>
+      <div class="foot-col"><h5>业务</h5><a href="/business.html#purchase">采购供应链</a><a href="/business.html#customs">进出口报关</a><a href="/business.html#warehouse">海外仓履约</a><a href="/business.html#logistics">国际物流</a></div>
+      <div class="foot-col"><h5>公司</h5><a href="/about.html">关于我们</a><a href="/business.html">服务能力</a><a href="/insights.html">市场动态</a><a href="/contact.html">联系我们</a></div>
+      <div class="foot-col"><h5>支持</h5><a href="/tracking.html">物流查询</a><a href="/downloads.html">单据下载</a><a href="/index.html#faq">常见问题</a><a href="/terms.html">合作条款</a></div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 HKBT International Trading Limited. All rights reserved.</span>
+      <span>Hong Kong · Shenzhen · Singapore · Los Angeles · Rotterdam</span>
+    </div>
+  </div>
+</footer>
+<script src="/assets/app.js"></script>
+</body>
+</html>
