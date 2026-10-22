@@ -786,11 +786,15 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     ok_page = n.strip() not in ("", "0")
     checks.append(("代理路径 %s（浏览器）" % path, ok_page, "返回站点页面" if ok_page else (n.strip() or "未返回页面")))
 
+    # 必须强制 HTTP/1.1：HTTP/2 会丢弃 Connection/Upgrade 头，nginx 拿不到
+    # $http_upgrade 就会走「浏览器访问」分支返回网站首页，于是 200 被当成通过 ——
+    # 代理明明不通，自检却全绿。只有 h1 下的 101 才是真的握手成功。
     _, wsc, _ = run(
-        "curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 %s -H 'Connection: Upgrade' "
+        "curl -4 -sk --http1.1 -o /dev/null -w '%%{http_code}' -m 10 %s -H 'Connection: Upgrade' "
         "-H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' "
         "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'https://%s:%s%s'" % (r, domain, port, path), shell=True)
-    checks.append(("代理路径 %s（WebSocket）" % path, wsc in ("101", "200"), wsc or "连接失败"))
+    checks.append(("代理路径 %s（WebSocket）" % path, wsc == "101",
+                   wsc or "连接失败"))
 
     _, subj, _ = run("echo | openssl s_client -connect 127.0.0.1:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (port, domain), shell=True)
     ok_cert = (("CN=%s" % domain) in subj) or (("CN = %s" % domain) in subj)
