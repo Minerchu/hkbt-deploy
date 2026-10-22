@@ -20,6 +20,7 @@
 | 部署后代理连不上，配置里 location 带着 `?` | [10](#10-代理路径带-querylocation-匹配不上--客户端写法不一致) |
 | 证书到期后续期失败，站点和代理一起失效 | [11](#11-certmodehttp-与-nginx-抢-80-端口续期必失败) |
 | 有的网站能开有的打不开，日志里有 network unreachable | [12](#12-没有-ipv6-出口但-dns-返回-aaaa网站打不开证书续不上) |
+| 部署全绿但代理连上即断，配置里 location 是个猜的路径 | [13](#13-面板读不到-path-时不能用默认值兜底) |
 
 ---
 
@@ -508,6 +509,71 @@ for i in 1 2 3; do curl -s -o /dev/null -w "%{time_connect}\n" https://ip.sb; do
 **顺带一提**
 
 日志里的 `dial tcp 0.0.0.1:xxx` 是阿里云 DNS 主动拦截某些域名（腾讯统计、广告域名）返回的黑洞地址，属于正常行为，和 IPv6 无关。
+
+---
+
+## 13. 面板读不到 path 时，不能用默认值兜底
+
+**现象**
+
+部署日志全是 OK，Nginx 里 `location` 写的是 `/index`，但：
+
+- 客户端握手拿到 101 后立刻断开
+- 或者浏览器访问代理路径，看到的是网站首页而不是进入代理
+- 面板上节点的 path 其实是 `/davsvbfb` 之类，和 `/index` 毫无关系
+
+**根因**
+
+早期版本在面板 API 不可达、或节点不是 ws 类型时，会把 path 兜底成 `/index`。
+这个值与节点真实 path 无关，后果是：
+
+1. 客户端发的 WebSocket 升级请求路径不匹配 → 掉进静态站点 → 返回 `index.html`
+2. 客户端收到的是 HTML 而不是代理响应 → 判定握手失败 → 断开
+
+最迷惑的表现是「能连上、但什么都打不开」，很容易被误判成网络问题。
+
+**处理**
+
+现在改为**读不到 path 就中止**，并打印排查项，不再猜：
+
+```bash
+python3 /opt/hkbt-deploy/app.py --probe; echo "exit=$?"
+# 拿到 path → 退出码 0；拿不到 → 2，脚本据此停止部署
+```
+
+输出里的 `source` 说明数据来源：
+
+| source | 含义 |
+|---|---|
+| `panel` | 面板 API 返回，最可信 |
+| `listen` | 面板不通，端口从进程监听表推断（path 仍为空） |
+| `config` | 面板完全不可达，沿用上次部署记录的 path，会明确告警 |
+
+**为什么不能手工填**
+
+V2bX 的 `config.json` 里没有 path，它自己也是运行时从面板拉的。
+手工写一个「看起来对」的值，等于在 Nginx 里固化一个可能过期的假设：
+面板改了 path，客户端订阅跟着更新，Nginx 还停在旧值，结果整节点失联。
+
+**排查顺序**
+
+```bash
+# 1) 凭据与节点 ID
+python3 -c "import json;n=json.load(open('/etc/V2bX/config.json'))['Nodes'][0];print(n['ApiHost'],n['NodeID'],n['NodeType'])"
+
+# 2) 面板返回
+curl -s "$(python3 -c "import json;print(json.load(open('/etc/V2bX/config.json'))['Nodes'][0]['ApiHost'])")/api/v1/server/UniProxy/config?node_type=vless&node_id=<ID>&token=<KEY>"
+
+# 3) 看 networkSettings.path 是否存在
+```
+
+如果面板返回里没有 `networkSettings.path`，说明这个节点不是 ws / grpc 类型（tcp、reality 没有路径），
+本工具的分流方式不适用，需要换节点类型。
+
+**Xboard 兼容**
+
+Xboard 与 V2board 用同一个端点，但部分分支会把结果包在 `{"data": {...}}` 里，
+字段也可能用 `network_settings`。工具两套都认，不需要改配置。
 
 ---
 

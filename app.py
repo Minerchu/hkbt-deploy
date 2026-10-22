@@ -153,13 +153,16 @@ def port_owner(port):
 
 
 def proxy_listen_port():
-    """面板 API 取不到端口时，直接从进程监听表里找代理端口"""
+    """面板 API 取不到端口时，直接从进程监听表里找代理端口。
+
+    排除面板自己的端口，否则重复部署时会把 8899 当成代理端口。
+    """
     rc, out, _ = run(["ss", "-lntp"])
     for line in out.splitlines():
         if not re.search(r"V2bX|sing-box|xray", line):
             continue
         m = re.search(r":(\d+)\s", line)
-        if m and m.group(1) != "8899":
+        if m and m.group(1) != str(PANEL_PORT):
             return m.group(1)
     return ""
 
@@ -178,14 +181,74 @@ def port_conflict(port, proxy_port):
 
 
 # ------------------------------------------------------------------ V2bX 探测
+def _pick(d, *keys, **kw):
+    """按优先级取第一个非空字段。Xboard 与 V2board 的命名有 camelCase / snake_case 两套。"""
+    default = kw.get("default")
+    if not isinstance(d, dict):
+        return default
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "", [], {}):
+            return v
+    return default
+
+
+def node_api_config(api, key, ntype, node_id, timeout=15):
+    """向面板拉取节点运行时配置，返回 (data, err)。
+
+    V2board 与 Xboard 共用 /api/v1/server/UniProxy/config 这个端点，
+    但 Xboard 的部分分支会把结果包在 data 里、字段也可能换成 snake_case，
+    这里统一兼容，避免因为一个字段名差异就退回「猜端口」。
+    """
+    base = (api or "").strip().rstrip("/")
+    if base.endswith("/api"):
+        base = base[:-4]
+    if not base:
+        return None, "config.json 里没有 ApiHost"
+    if not key:
+        return None, "config.json 里没有 ApiKey"
+    if not node_id:
+        return None, "config.json 里没有 NodeID"
+
+    url = "%s/api/v1/server/UniProxy/config?node_type=%s&node_id=%s&token=%s" % (
+        base, ntype, node_id, key)
+
+    err = ""
+    for _ in range(2):  # 面板偶发 5xx / 网络抖动，重试一次
+        rc, out, e = run(["curl", "-s", "-m", str(timeout), url])
+        if not out:
+            err = (e or "面板无响应")[:120]
+            continue
+        try:
+            data = json.loads(out)
+        except Exception:
+            err = "面板返回非 JSON：%s" % out[:100]
+            continue
+        if isinstance(data, dict) and isinstance(data.get("data"), dict):
+            data = data["data"]
+        if not isinstance(data, dict):
+            err = "面板返回结构异常"
+            continue
+        if _pick(data, "server_port", "serverPort", "port", "listen_port"):
+            return data, ""
+        err = str(_pick(data, "message", "msg", default=data))[:120]
+    return None, err
+
+
 def detect_v2bx():
-    """读取 V2bX 配置 + 面板 API，拿到节点真实端口/路径/域名"""
+    """读取 V2bX 配置 + 面板 API，拿到节点真实端口/路径/域名。
+
+    端口和路径只能问面板：V2bX 的 config.json 里只有 NodeID 和 API 凭据，
+    真正的 server_port 与 ws path 是运行时从面板拉的，磁盘上没有副本
+    （sing_origin.json 的 inbounds 是 null，由 V2bX 在内存里拼装）。
+    """
     info = {
         "installed": os.path.exists(V2BX_CONF),
         "core": "", "domain": "", "port": "", "path": "",
         "sni": "", "network": "", "tls": 0,
         "listen_ip": "", "cert": "", "key": "", "node_id": "",
-        "api_ok": False, "api_msg": ""
+        "api_ok": False, "api_msg": "", "source": "",
+        "api_host": "", "ntype": ""
     }
     if not info["installed"]:
         info["api_msg"] = "未检测到 /etc/V2bX/config.json"
@@ -207,41 +270,51 @@ def detect_v2bx():
     info["core"] = node.get("Core", "sing")
     info["listen_ip"] = node.get("ListenIP", "")
     info["node_id"] = str(node.get("NodeID", ""))
+    info["api_host"] = node.get("ApiHost", "")
+    info["ntype"] = node.get("NodeType", "vless")
     cc = node.get("CertConfig", {})
     info["domain"] = cc.get("CertDomain", "")
     info["cert"] = cc.get("CertFile", "")
     info["key"] = cc.get("KeyFile", "")
 
-    # 端口与路径：优先问面板 API
-    api = (node.get("ApiHost") or "").rstrip("/")
-    key = node.get("ApiKey", "")
-    ntype = node.get("NodeType", "vless")
-    if api and key and info["node_id"]:
-        url = "%s/api/v1/server/UniProxy/config?node_type=%s&node_id=%s&token=%s" % (
-            api, ntype, info["node_id"], key)
-        rc, out, err = run(["curl", "-s", "-m", "15", url])
-        try:
-            data = json.loads(out)
-            if data.get("server_port"):
-                info["port"] = str(data["server_port"])
-                ns = data.get("networkSettings") or {}
-                info["path"] = ns.get("path", "/index")
-                ts = data.get("tls_settings") or {}
-                info["sni"] = ts.get("server_name", info["domain"])
-                info["network"] = data.get("network", "")
-                info["tls"] = data.get("tls", 0)
-                info["api_ok"] = True
-            else:
-                info["api_msg"] = str(data.get("message") or data)[:120]
-        except Exception:
-            info["api_msg"] = "面板返回无法解析: %s" % (out[:100] or err[:100])
+    data, err = node_api_config(node.get("ApiHost"), node.get("ApiKey"),
+                                node.get("NodeType", "vless"), info["node_id"])
+    if data:
+        info["port"] = str(_pick(data, "server_port", "serverPort", "port",
+                                 "listen_port", default=""))
+        # path 可能在 networkSettings / network_settings，ws 节点也可能嵌一层 wsSettings
+        ns = _pick(data, "networkSettings", "network_settings", default={})
+        if isinstance(ns, str):
+            try:
+                ns = json.loads(ns)
+            except Exception:
+                ns = {}
+        ws = _pick(ns, "wsSettings", "ws_settings", default={}) or {}
+        info["path"] = str(_pick(ns, "path", "Path")
+                           or _pick(ws, "path", "Path") or "")
+        ts = _pick(data, "tls_settings", "tlsSettings", default={}) or {}
+        info["sni"] = str(_pick(ts, "server_name", "serverName", "sni", default="") or "")
+        info["network"] = str(_pick(data, "network", "type", default="") or "")
+        info["tls"] = _pick(data, "tls", default=0) or 0
+        info["api_ok"] = True
+        info["source"] = "panel"
+    else:
+        info["api_msg"] = err
 
+    # 端口兜底：进程监听表。面板临时不通时仍能拿到代理端口，
+    # 但路径没有等价兜底 —— 猜错路径会让代理静默失联，所以宁可不部署。
     if not info["port"]:
-        info["port"] = "443"
-        if not info["api_msg"]:
-            info["api_msg"] = "未能从面板取到端口，已默认 443，请在面板中确认"
-    if not info["path"]:
-        info["path"] = "/index"
+        info["port"] = proxy_listen_port()
+        if info["port"]:
+            info["source"] = "listen"
+
+    # 路径兜底仅限「本机上次部署成功时记录的值」，且面板必须完全不可达
+    if not info["path"] and not info["api_ok"]:
+        prev = load_conf().get("path") or ""
+        if prev:
+            info["path"] = prev
+            info["source"] = info["source"] or "config"
+
     if not info["sni"]:
         info["sni"] = info["domain"]
     return info
@@ -930,7 +1003,30 @@ def cmd_init(password, port=None, path=None, template=None, brand=None, auto=Fal
     # 对外端口固定 443：节点端口可能是 20000/21311，Nginx 不能去抢它。
     # 两者不同时走分离端口（代理留在原端口），相同时由 do_deploy 收窄 sing-box。
     port = str(port or "443")
-    path = path or v["path"] or "/index"
+    path = path or v["path"] or ""
+
+    # 路径不猜。猜 /index 之类的默认值时，Nginx 的 location 与节点真实 path 不符，
+    # 代理流量会掉进静态站点（握手能过、随即断开），比直接报错难排查得多。
+    if not path:
+        print("=" * 62)
+        print("  无法从面板读取节点路径（ws path），已停止部署")
+        print("=" * 62)
+        print("  V2bX 的端口和路径都是运行时从面板拉取的，本机没有副本，")
+        print("  因此必须能连通面板 API 才能拿到，不能靠手工填写或默认值。")
+        print()
+        print("  请依次检查：")
+        print("    1) /etc/V2bX/config.json 的 ApiHost / ApiKey / NodeID 是否正确")
+        print("    2) 面板节点是否为 ws / grpc 类型（tcp、reality 节点没有 path）")
+        print("    3) 本机能否访问面板：%s" % (v["api_host"] or "<ApiHost 为空>"))
+        print("       请求：%s/api/v1/server/UniProxy/config?node_type=%s&node_id=%s&token=***"
+              % ((v["api_host"] or "<ApiHost>").rstrip("/"), v["ntype"], v["node_id"] or "<NodeID>"))
+        print("    4) 面板返回内容：%s" % (v["api_msg"] or "API 未返回数据"))
+        print()
+        print("  面板连通后重新执行即可，无需改动任何配置。")
+        print("=" * 62)
+        log("部署中止：面板未返回 path")
+        return False
+
     ip = public_ip()
 
     print("=" * 62)
@@ -938,12 +1034,21 @@ def cmd_init(password, port=None, path=None, template=None, brand=None, auto=Fal
     print("=" * 62)
     print("  代理程序   : %s" % ("V2bX / %s 核心" % v["core"] if v["installed"] else "未检测到"))
     print("  节点域名   : %s" % (domain or "未取到"))
-    print("  节点端口   : %s%s" % (port, "" if v["api_ok"] else "  (未从面板确认)"))
-    print("  代理路径   : %s" % path)
+    print("  对外端口   : %s（网站与面板）" % port)
+    print("  代理端口   : %s  ← 面板读取" % (v["port"] or "未取到"))
+    print("  代理路径   : %s  ← 面板读取" % path)
+    print("  节点类型   : %s%s" % (v["network"] or "未知",
+                                " / TLS" if v["tls"] else ""))
     print("  公网 IP    : %s" % (ip or "未取到"))
     print("  站点模板   : %s" % (cfg.get("template") or DEFAULT_TEMPLATE))
     print("  网站名称   : %s" % (cfg.get("brand") or "模板默认"))
     print("  面板入口   : https://%s%s/" % (domain or "<域名>", cfg["admin_path"]))
+    if v["source"] == "config":
+        print("  " + "-" * 58)
+        print("  注意：面板 API 不可达（%s）" % (v["api_msg"] or "无响应"))
+        print("        当前沿用上次部署记录的路径 %s。" % path)
+        print("        如果面板上改过 path，请先恢复面板连通再重新部署，")
+        print("        否则 Nginx 分流会与节点不一致，客户端连上即断。")
     print("=" * 62)
 
     if v["installed"] and domain and ip:
@@ -1097,18 +1202,28 @@ def main():
     ap = argparse.ArgumentParser(description="HKBT Deploy")
     ap.add_argument("--init", action="store_true", help="初始化：探测环境并生成配置")
     ap.add_argument("--password", help="设置面板登录密码")
-    ap.add_argument("--port", help="对外端口，默认自动探测（通常 443）")
-    ap.add_argument("--path", help="代理路径，默认自动探测（如 /index）")
+    ap.add_argument("--port", help="对外端口（网站/面板），默认 443；代理端口从面板自动读取")
+    ap.add_argument("--path", help="仅调试用：强制指定代理路径。正常情况不用填，自动从面板读取")
     ap.add_argument("--template", help="站点模板 key，默认沿用配置或 trade")
     ap.add_argument("--brand", help="网站名称，默认沿用配置或模板默认品牌")
     ap.add_argument("--auto", action="store_true",
                     help="全自动：随机模板 + 随机品牌，适合批量装机")
+    ap.add_argument("--probe", action="store_true",
+                    help="只探测节点配置并以 JSON 输出（端口/路径来自面板，不部署）")
     ap.add_argument("--serve", action="store_true", help="启动面板服务")
     a = ap.parse_args()
 
+    if a.probe:
+        v = detect_v2bx()
+        keys = ("installed", "core", "domain", "port", "path", "sni",
+                "network", "tls", "node_id", "api_ok", "api_msg", "source")
+        print(json.dumps({k: v[k] for k in keys}, ensure_ascii=False))
+        # 退出码 2 表示「面板没给出 path」，调用方据此中止，不要继续部署
+        sys.exit(0 if v["path"] else 2)
+
     if a.init:
-        cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto)
-        return
+        r = cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto)
+        sys.exit(0 if r else 1)
     if a.serve:
         app = create_app()
         app.run(host="127.0.0.1", port=PANEL_PORT, debug=False, threaded=True)

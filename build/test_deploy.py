@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """部署链路自检：验证模板注册、选择、品牌与域名替换（不触碰 Nginx / systemd）。"""
+import json
 import os
 import shutil
 import sys
@@ -159,6 +160,57 @@ def main():
         bad += 1
     else:
         print("配置校验：普通 path 精确匹配不改写")
+
+    # 面板字段兼容：Xboard 会把结果包在 data 里，字段用 snake_case。
+    # 这两种写法都必须能解析，否则会退回去「猜端口/路径」。
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class _Handler(BaseHTTPRequestHandler):
+        payload = {}
+
+        def do_GET(self):
+            b = json.dumps(self.payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def log_message(self, *a):
+            pass
+
+    _Handler.payload = {
+        "data": {
+            "server_port": 8443, "network": "ws",
+            "network_settings": {"path": "/xb/path"},
+            "tls_settings": {"server_name": "x.example.com"}, "tls": 1,
+        }
+    }
+    srv = HTTPServer(("127.0.0.1", 0), _Handler)
+    api_port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        api = "http://127.0.0.1:%d" % api_port
+        d, _ = app.node_api_config(api, "k", "vless", "1")
+        ns = app._pick(d, "networkSettings", "network_settings", default={})
+        if not d or app._pick(d, "server_port") != 8443 or app._pick(ns, "path") != "/xb/path":
+            print("FAIL Xboard 的 snake_case / data 包装未正确解析")
+            bad += 1
+        else:
+            print("配置校验：兼容 Xboard 的 snake_case 与 data 包装")
+
+        # tcp 节点没有 path，必须返回空，不能伪造 /index
+        _Handler.payload = {"server_port": 443, "network": "tcp", "networkSettings": None}
+        d2, _ = app.node_api_config(api, "k", "vless", "1")
+        ns2 = app._pick(d2, "networkSettings", "network_settings", default={})
+        if app._pick(ns2, "path") not in (None, ""):
+            print("FAIL 无 path 的节点被伪造了默认值")
+            bad += 1
+        else:
+            print("配置校验：无 path 的节点不伪造默认值")
+    finally:
+        srv.shutdown()
 
     print("\n%s" % ("全部通过" if bad == 0 else "%d 项失败" % bad))
     return 1 if bad else 0

@@ -109,6 +109,46 @@ sing-box 被收窄到 `127.0.0.1:443`，Nginx 绑公网 IP 的 443。
                     └──────────────────────────────────────┘
 ```
 
+### 端口与路径从哪来
+
+V2bX 的 `/etc/V2bX/config.json` 里只有 `NodeID` 和 API 凭据，真正的 `server_port` 和 ws `path`
+是它启动时从面板拉取的，**磁盘上没有副本**（`sing_origin.json` 的 `inbounds` 是 `null`，
+由 V2bX 在内存里拼装）。所以本工具也从同一个来源读，不需要手工填写：
+
+```
+/etc/V2bX/config.json ──ApiHost/ApiKey/NodeID──▶ 面板 API
+                                                    │
+                          ┌─────────────────────────┘
+                          ▼
+              server_port + networkSettings.path
+                          │
+                          ▼
+              Nginx location 与 proxy_pass
+```
+
+```bash
+python3 app.py --probe     # 只探测，输出 JSON
+```
+
+```json
+{"installed": true, "domain": "jpcdn.example.com", "port": "20000",
+ "path": "/sdf=?kfj", "network": "ws", "tls": 1,
+ "api_ok": true, "source": "panel"}
+```
+
+`source` 说明数据来源：`panel`（面板）、`listen`（进程监听表兜底端口）、
+`config`（面板不可达，沿用上次部署记录的路径）。
+
+**读不到 path 就不部署。** 早期版本会默认 `/index`，结果 Nginx 的 location 与节点不符，
+代理流量掉进静态站点，表现为「握手能过、随即断开」—— 比直接报错难查得多。
+现在改为中止并打印排查项。
+
+字段兼容 V2board 与 Xboard 两套写法：`networkSettings` / `network_settings`、
+`server_port` / `serverPort` / `listen_port`、`tls_settings` / `tlsSettings`，
+以及 Xboard 部分分支的 `{"data": {...}}` 包装层。
+
+> 在面板里改了 path 或端口之后，要重新部署一次，Nginx 配置才会跟着更新。
+
 ### 四条硬约束
 
 这四条是实际装机器时踩出来的，代码里都有对应校验：
@@ -201,8 +241,10 @@ XrayR 配 `CertMode: none` + `EnableFallback: true`，Trojan 收到不像代理�
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Minerchu/hkbt-deploy/master/install.sh \
-  | bash -s -- --path /index --port 443 --password 你的密码
+  | bash -s -- --port 443 --password 你的密码
 ```
+
+`--path` 不用写：代理路径由 V2bX 从面板拉取，工具再向面板查一次，保证与节点一致。
 
 或者先拉下来：
 
@@ -215,9 +257,12 @@ cd hkbt-deploy && bash install.sh
 
 | 参数 | 含义 | 默认 |
 |---|---|---|
-| `--path` | 代理路径，必须与面板节点一致，如 `/index`、`/sdf=?kfj` | 自动向面板 API 查询 |
+| `--path` | **仅调试用**，强制指定代理路径 | 自动向面板 API 查询，不填 |
 | `--port` | **对外端口**（网站和面板用），不是代理端口 | `443` |
 | `--password` | 面板登录密码 | 自动生成并打印 |
+
+> 正常情况下只需要 `--port` 和 `--password`。代理路径与代理端口都从面板读，
+> 手工填反而容易和节点不一致（面板改过 path 时，填旧值会让代理连上即断）。
 
 > `--port` 填的是 Nginx 的监听端口。代理真实端口由工具从面板 API 读取，
 > 两者相同时走形态 A，不同时走形态 B。**填代理端口会被校验直接拒绝**。
