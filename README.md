@@ -274,13 +274,15 @@ cd hkbt-deploy && bash install.sh
 1. 装 Nginx / Flask / openssl / unzip
 2. 检测本机是否有 IPv6 出口，没有就写 `gai.conf` 让 IPv4 优先
 3. 探测 `/etc/V2bX/config.json`，向面板 API 查询节点真实端口与路径
-4. 检查端口占用，冲突时直接拒绝并说明原因
-5. 生成 Nginx 配置（含双用途 location、面板入口、静态资源缓存）
-6. `nginx -t` 校验 → reload
-7. 加 NAT 重定向，让代理端口也返回网站（`--no-camouflage` 可跳过）
-8. 启动 `hkbt-deploy` 面板服务（只监听 `127.0.0.1:8899`）
-9. 配置证书续期自动 reload（每 6 小时检测一次）
-10. 打印面板地址与代理参数
+4. **等代理就绪**：服务 active + 观察到监听端口，最多 120 秒
+5. 检查端口占用，冲突时直接拒绝并说明原因
+6. 生成 Nginx 配置（含双用途 location、面板入口、静态资源缓存）
+7. `nginx -t` 校验 → reload
+8. 加 NAT 重定向，让代理端口也返回网站（`--no-camouflage` 可跳过）
+9. 启动 `hkbt-deploy` 面板服务（只监听 `127.0.0.1:8899`）
+10. 配置证书续期自动 reload（每 6 小时检测一次）
+11. 启用配置同步（V2bX 重启即触发 + 每 3 分钟兜底）
+12. 打印面板地址与代理参数
 
 ---
 
@@ -537,6 +539,10 @@ tail -f /var/log/hkbt-deploy.log    # 部署日志
 
 nginx -t                            # 配置校验
 ss -lntp | grep -E ':443|:20000'    # 端口归属
+
+systemctl list-timers hkbt-sync.timer   # 下次自动同步时间
+python3 /opt/hkbt-deploy/app.py --sync  # 立刻同步一次
+head -3 /etc/nginx/conf.d/hkbt-deploy.conf   # 当前生效的端口/路径
 ```
 
 ### 回滚
