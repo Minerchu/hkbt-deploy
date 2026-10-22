@@ -133,18 +133,32 @@ def main():
         else:
             print("配置校验：%s" % desc)
 
-    # path 带 query（面板里可能是 /sdf=?kfj）：location 必须只用 ? 前的部分，
-    # 否则 nginx 永远匹配不上，代理流量会掉进静态站点返回 404
+    # path 带 query（面板里可能是 /sdf=?kfj）：location 只用 ? 前的部分匹配，
+    # 并且尾部 = 可选 + rewrite 回真实 path，兼容客户端把 ? 当分隔符的各种写法
     conf_q = app.gen_nginx("hai-lian.com", "443", "/sdf=?kfj", "/var/www/hkbt",
                            "132.226.145.154", "/tmp/c.cer", "/tmp/c.key", "/__x", "20000")
-    if "location = /sdf= {" not in conf_q:
+    if "location ~ ^/sdf=?$ {" not in conf_q:
         print("FAIL 带 query 的 path 未正确切分 location")
         bad += 1
     else:
         print("配置校验：path 带 query 时 location 取 ? 前部分")
+    if "rewrite ^ /sdf=?kfj? break;" not in conf_q:
+        print("FAIL 带 query 的 path 未统一改写回真实路径")
+        bad += 1
+    else:
+        print("配置校验：path 带 query 时统一改写")
     if "proxy_pass https://127.0.0.1:20000;" not in conf_q:
         print("FAIL 带 query 的 path 未正确指向代理端口")
         bad += 1
+
+    # 无 query 的普通 path 不应产生 rewrite，保持原样透传
+    conf_plain = app.gen_nginx("hai-lian.com", "443", "/davsvbfb", "/var/www/hkbt",
+                               "132.226.145.154", "/tmp/c.cer", "/tmp/c.key", "/__x", "21311")
+    if "location ~ ^/davsvbfb$ {" not in conf_plain or "rewrite ^ /davsvbfb" in conf_plain:
+        print("FAIL 普通 path 不应改写")
+        bad += 1
+    else:
+        print("配置校验：普通 path 精确匹配不改写")
 
     print("\n%s" % ("全部通过" if bad == 0 else "%d 项失败" % bad))
     return 1 if bad else 0

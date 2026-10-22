@@ -94,6 +94,15 @@ fi
 command -v openssl >/dev/null 2>&1 || apt-get install -y -qq openssl >/dev/null 2>&1 || true
 command -v unzip  >/dev/null 2>&1 || apt-get install -y -qq unzip >/dev/null 2>&1 || true
 
+# 本机没有 IPv6 出口时，DNS 仍会返回 AAAA，程序先连 IPv6 会卡住（表现为「网站打不开」）。
+# 只调整 glibc 排序让 IPv4 优先，不动 IPv6 栈，避免影响依赖双栈的服务。
+if ! ip -6 route show default 2>/dev/null | grep -q default; then
+  if ! grep -q "^precedence ::ffff:0:0/96" /etc/gai.conf 2>/dev/null; then
+    echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+    ok "无 IPv6 出口，已设置 IPv4 优先"
+  fi
+fi
+
 # ---------------- 3. 部署程序文件 ----------------
 info "部署程序到 /opt/hkbt-deploy …"
 mkdir -p /opt/hkbt-deploy/templates /opt/hkbt-deploy/backups

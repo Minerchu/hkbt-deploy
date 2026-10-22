@@ -281,8 +281,18 @@ def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, pr
 
     # 面板里的 path 可能带 query（例：/sdf=?kfj）。Nginx 的 location 只匹配 URI 部分，
     # 带 ? 的整串永远匹配不上，必须切掉 query 再匹配。
-    # proxy_pass 不带 URI 时原始请求行会原样透传（含 query），客户端无感。
     path_uri = path.split("?", 1)[0] or "/"
+    has_query = "?" in path
+
+    # 客户端对带 ? = 的 path 解析五花八门：可能把 ? 当分隔符（/sdf?kfj）、
+    # 可能只保留前缀（/sdf）、也可能原样发送（/sdf=?kfj）。
+    # 用正则让尾部 = 可选，再统一 rewrite 回节点真实 path，三种写法都能通。
+    loc_pat = re.escape(path_uri)
+    if loc_pat.endswith("="):
+        loc_pat = loc_pat[:-1] + "=?"
+    loc_line = "    location ~ ^%s$ {" % loc_pat
+    # replacement 末尾的 ? 表示丢弃客户端原始 query，避免拼接出 /sdf=?kfj?kfj
+    rewrite_line = ("        rewrite ^ %s? break;\n" % path) if has_query else ""
 
     # 绑定地址：代理在独立端口时绑 0.0.0.0 最稳（NAT 机器上公网 IP 不在网卡上，
     # 绑它会直接 bind 失败）；同端口场景必须绑本机真实持有的地址，否则会和代理抢 127.0.0.1
@@ -355,9 +365,9 @@ server {
     # ---- 代理路径：%s 双用途 ----
     # 带 Upgrade: websocket -> 代理
     # 普通浏览器访问      -> 网站首页（伪装成普通页面）
-    location = %s {
+%s
         if ($http_upgrade = "") { rewrite ^ /index.html last; }
-        proxy_pass https://127.0.0.1:%s;
+%s        proxy_pass https://127.0.0.1:%s;
         proxy_ssl_verify off;
         proxy_ssl_server_name on;
         proxy_ssl_name %s;
@@ -392,7 +402,7 @@ server {
        mapv, domain, site_dir, ("" if str(port) == "443" else ":%s" % port),
        bind, port, h2_listen, h2_directive, domain,
        cert, key,
-       path, path_uri, proxy_port, domain,
+       path, loc_line, rewrite_line, proxy_port, domain,
        admin_block,
        site_dir, STATIC_EXTS, site_dir)
 
@@ -581,6 +591,40 @@ def narrow_v2bx(target="127.0.0.1"):
     return ok, "V2bX 监听已收窄到 %s" % target if ok else "收窄后未观察到回环监听，请检查"
 
 
+def ipv6_usable():
+    """本机是否真的能走 IPv6：有默认路由且能连外网"""
+    rc, out, _ = run(["ip", "-6", "route", "show", "default"])
+    if rc != 0 or not out.strip():
+        return False
+    rc2, _, _ = run(["curl", "-6", "-s", "-m", "5", "-o", "/dev/null", "https://ip.sb"])
+    return rc2 == 0
+
+
+def normalize_listen_ip():
+    """ListenIP 为 :: 时依赖 IPv6 栈。本机没有 IPv6 出口时必须改回 0.0.0.0，
+    否则 V2bX 重启后 bind 失败，代理直接起不来。"""
+    if not os.path.exists(V2BX_CONF):
+        return True, "未检测到 V2bX，跳过"
+    try:
+        with open(V2BX_CONF, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception as e:
+        return True, "V2bX 配置解析失败，跳过：%s" % e
+    nodes = d.get("Nodes") or []
+    targets = [n for n in nodes if str(n.get("ListenIP", "")) in ("::", "[::]")]
+    if not targets:
+        return True, "监听地址已是 IPv4 通配，无需调整"
+    if ipv6_usable():
+        return True, "本机 IPv6 可用，保留 :: 双栈监听"
+    for n in targets:
+        n["ListenIP"] = "0.0.0.0"
+    with open(V2BX_CONF, "w", encoding="utf-8") as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    run(["systemctl", "restart", "V2bX"])
+    time.sleep(4)
+    return True, "本机无 IPv6 出口，监听地址已改为 0.0.0.0"
+
+
 def unzip_site(zip_path, site_dir):
     """解压站点；若 zip 只有一层顶层目录，自动提升为根"""
     if os.path.exists(site_dir):
@@ -716,6 +760,11 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
         add("清理冲突配置", True, "已禁用：%s" % "、".join(os.path.basename(m) for m in moved))
     else:
         add("清理冲突配置", True, "无冲突配置")
+
+    # ListenIP=:: 依赖 IPv6 栈；本机没有 IPv6 出口时重启后会 bind 失败
+    ok, msg = normalize_listen_ip()
+    if not add("规范 sing-box 监听地址", ok, msg):
+        return False, steps
 
     # 代理在独立端口时不抢端口，收窄反而会让客户端断连，跳过
     add("收窄 sing-box 监听", True, "代理在独立端口 %s，无需收窄" % proxy_port)

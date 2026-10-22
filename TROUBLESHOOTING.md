@@ -17,8 +17,9 @@
 | 访问代理端口是一张空白的 404 | [7](#7-代理端口没有网页伪装一眼就露馅) |
 | 线上站点目录里出现 meta.json | [8](#8-模板的-metajson-被拷到了线上) |
 | 装完不知道面板地址是什么 | [9](#9-安装完不打印面板地址) |
-| 部署后代理连不上，配置里 location 带着 `?` | [10](#10-代理路径带-querylocation-永远匹配不上) |
+| 部署后代理连不上，配置里 location 带着 `?` | [10](#10-代理路径带-querylocation-匹配不上--客户端写法不一致) |
 | 证书到期后续期失败，站点和代理一起失效 | [11](#11-certmodehttp-与-nginx-抢-80-端口续期必失败) |
+| 有的网站能开有的打不开，日志里有 network unreachable | [12](#12-没有-ipv6-出口但-dns-返回-aaaa网站打不开证书续不上) |
 
 ---
 
@@ -324,43 +325,69 @@ curl -sk -o /dev/null -w "%{http_code}\n" https://域名:21311/不存在路径  
 
 ---
 
-## 10. 代理路径带 query，location 永远匹配不上
+## 10. 代理路径带 query，location 匹配不上 / 客户端写法不一致
 
 **现象**
 
-部署日志全部通过，但客户端连不上。nginx 配置里写着 `location = /sdf=?kfj`，浏览器访问这个地址返回 404，代理握手拿不到 101。
+两种表现：
+
+1. 部署日志全部通过，但客户端连不上，浏览器访问代理路径返回 404。
+2. 换个客户端就连不上 —— 同一个节点，A 客户端能用，B 客户端 404。
 
 **根因**
 
-面板里的 path 可以是 `/sdf=?kfj` 这种带 `?` 的值。nginx 的 `location` 只匹配**解码后的 URI**，`?` 之后属于 query string，不参与匹配。
-所以 `location = /sdf=?kfj` 永远不可能命中 —— 客户端实际发的是 `GET /sdf=?kfj`，nginx 眼里 `$uri` 是 `/sdf=`。
+面板里的 path 可以是 `/sdf=?kfj` 这种同时含 `=` 和 `?` 的值。这里叠了两层问题：
+
+第一层，nginx 的 `location` 只匹配**解码后的 URI**，`?` 之后属于 query string，不参与匹配。所以 `location = /sdf=?kfj` 永远不可能命中，`$uri` 实际是 `/sdf=`。
+
+第二层，客户端对 `=` 和 `?` 的处理不统一，同一个 path 会发出四种不同的请求行：
+
+| 客户端实际发送 | nginx 看到的 $uri | 结果 |
+|---|---|---|
+| `/sdf=?kfj`（原样） | `/sdf=` | 101 |
+| `/sdf?kfj`（把 ? 当分隔符） | `/sdf` | 404 |
+| `/sdf`（只保留前缀） | `/sdf` | 404 |
+| `/sdf%3D%3Fkfj`（整串编码） | `/sdf%3D%3Fkfj` | 404 |
+
+只有原样发送才能通。客户端一旦「智能」解析一下，代理就连不上，表现是所有网站都打不开 —— 用户很容易误判成「某个网站挂了」。
 
 **处理**
 
-生成配置时切掉 query，只拿 URI 部分做 location；`proxy_pass` 后面不带 URI，原始请求行（含 query）会原样透传，客户端无感。
+生成配置时切掉 query，用**正则让尾部 `=` 可选**，再统一 rewrite 回节点真实 path：
 
 ```python
 path_uri = path.split("?", 1)[0] or "/"      # /sdf=?kfj  →  /sdf=
+has_query = "?" in path
+loc_pat = re.escape(path_uri)
+if loc_pat.endswith("="):
+    loc_pat = loc_pat[:-1] + "=?"            # /sdf=  →  /sdf=?
 ```
 
 ```nginx
-location = /sdf= {
+location ~ ^/sdf=?$ {
     if ($http_upgrade = "") { rewrite ^ /index.html last; }
-    proxy_pass https://127.0.0.1:20000;      # 不带 URI，透传原始请求
+    rewrite ^ /sdf=?kfj? break;              # 末尾 ? 丢弃客户端原始 query
+    proxy_pass https://127.0.0.1:20000;
 }
 ```
 
+`rewrite` 末尾那个 `?` 很关键：它表示丢弃客户端带来的 query，否则会拼成 `/sdf=?kfj?kfj`。
+
 **验证**
 
+四种写法必须全部 101：
+
 ```bash
-# 注意 URL 必须加引号，否则 shell 会把 ? 当通配符
-curl -sk --http1.1 -o /dev/null -w "%{http_code}\n" \
-  -H "Connection: Upgrade" -H "Upgrade: websocket" \
-  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-  "https://域名/sdf=?kfj"        # 必须是 101
+for u in "/sdf=?kfj" "/sdf?kfj" "/sdf" "/sdf="; do
+  printf "%-14s " "$u"
+  curl -sk --http1.1 -o /dev/null -w "%{http_code}\n" \
+    -H "Connection: Upgrade" -H "Upgrade: websocket" \
+    -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+    "https://域名$u"
+done
 ```
 
-`build/test_deploy.py` 里有对应断言：带 query 的 path 必须生成 `location = /sdf= {`。
+`build/test_deploy.py` 里有对应断言：带 query 的 path 必须生成 `location ~ ^/sdf=?$ {` 和 `rewrite ^ /sdf=?kfj? break;`，普通 path 不能生成 rewrite。
 
 ---
 
@@ -403,6 +430,84 @@ journalctl -u V2bX --since "2 min ago" | grep -iE "cert|acme"   # 重启后不�
 **如果 DNS 不在 Cloudflare**
 
 两个选择：一是把域名 NS 迁到 CF；二是在续期窗口前手动 `systemctl stop nginx`，续完再起。后者不可持续，只适合应急。
+
+---
+
+## 12. 没有 IPv6 出口，但 DNS 返回 AAAA：网站打不开、证书续不上
+
+**现象**
+
+很迷惑，因为服务器上「有的网站能开，有的开不了」：
+
+- `curl https://ip.sb` 通，但浏览器打开卡半天
+- `ping` 通，`curl -6` 直接失败
+- V2bX 日志里大量 `network is unreachable` 或 `dial tcp 0.0.0.1:xxx: i/o timeout`
+- lego 申请证书时报「连不上 Cloudflare」，但 `curl https://api.cloudflare.com` 明明是通的
+
+**根因**
+
+阿里云内网 DNS（`100.100.2.136`）优先返回 AAAA 记录，而机器只有 IPv4 地址、没有 IPv6 默认路由。
+程序拿到 IPv6 地址后先尝试连接，内核返回 `ENETUNREACH`，失败后才回退 IPv4。
+
+curl 回退得快（毫秒级），浏览器和 Go 程序回退得慢，表现出来就是「打不开」。
+证书申请失败也是同一个原因：lego 连 ACME 服务器时先试 IPv6，超时后整个流程已经失败了。
+
+**判断**
+
+```bash
+ip -6 route show default          # 空 = 没有 IPv6 出口
+curl -6 -s -m 5 https://ip.sb     # 失败
+curl -4 -s -m 5 https://ip.sb     # 成功
+getent hosts ip.sb                # 只返回 2606:4700:... 就是命中这个问题
+```
+
+**处理**
+
+两个层面，按需选择：
+
+```bash
+# 1) 让 glibc 优先 IPv4（安全，不影响双栈服务）
+echo "precedence ::ffff:0:0/96  100" >> /etc/gai.conf
+
+# 2) 彻底禁用 IPv6 栈（本机确认没有 IPv6 时）
+cat > /etc/sysctl.d/99-disable-ipv6.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+EOF
+sysctl -p /etc/sysctl.d/99-disable-ipv6.conf
+```
+
+**注意**：如果做了第 2 步，必须检查 V2bX 的 `ListenIP`。它默认是 `::`（双栈），IPv6 栈禁用后重启会 bind 失败，代理直接起不来：
+
+```bash
+# 必须改成 0.0.0.0
+python3 - <<'PY'
+import json
+p = "/etc/V2bX/config.json"
+d = json.load(open(p))
+for n in d.get("Nodes", []):
+    if n.get("ListenIP") in ("::", "[::]"):
+        n["ListenIP"] = "0.0.0.0"
+json.dump(d, open(p, "w"), indent=2, ensure_ascii=False)
+PY
+systemctl restart V2bX
+```
+
+`install.sh` 已加入检测：无 IPv6 默认路由时自动写 `gai.conf`（只改排序，不动栈）。
+`app.py` 的部署流程也会检查 `ListenIP`，IPv6 不可用时自动改成 `0.0.0.0`。
+
+**验证**
+
+```bash
+getent ahosts ip.sb | head -3      # IPv4 必须排在第一
+for i in 1 2 3; do curl -s -o /dev/null -w "%{time_connect}\n" https://ip.sb; done
+# 应该稳定在 5ms 左右；如果出现 500ms，说明还在先试 IPv6
+```
+
+**顺带一提**
+
+日志里的 `dial tcp 0.0.0.1:xxx` 是阿里云 DNS 主动拦截某些域名（腾讯统计、广告域名）返回的黑洞地址，属于正常行为，和 IPv6 无关。
 
 ---
 
