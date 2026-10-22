@@ -17,6 +17,8 @@
 | 访问代理端口是一张空白的 404 | [7](#7-代理端口没有网页伪装一眼就露馅) |
 | 线上站点目录里出现 meta.json | [8](#8-模板的-metajson-被拷到了线上) |
 | 装完不知道面板地址是什么 | [9](#9-安装完不打印面板地址) |
+| 部署后代理连不上，配置里 location 带着 `?` | [10](#10-代理路径带-querylocation-永远匹配不上) |
+| 证书到期后续期失败，站点和代理一起失效 | [11](#11-certmodehttp-与-nginx-抢-80-端口续期必失败) |
 
 ---
 
@@ -319,6 +321,88 @@ curl -sk -o /dev/null -w "%{http_code}\n" https://域名:21311/不存在路径  
 **处理**
 
 改为以磁盘上的配置为准做合并（`merge_init_conf()`），内存值只用于补缺，不覆盖已有字段。
+
+---
+
+## 10. 代理路径带 query，location 永远匹配不上
+
+**现象**
+
+部署日志全部通过，但客户端连不上。nginx 配置里写着 `location = /sdf=?kfj`，浏览器访问这个地址返回 404，代理握手拿不到 101。
+
+**根因**
+
+面板里的 path 可以是 `/sdf=?kfj` 这种带 `?` 的值。nginx 的 `location` 只匹配**解码后的 URI**，`?` 之后属于 query string，不参与匹配。
+所以 `location = /sdf=?kfj` 永远不可能命中 —— 客户端实际发的是 `GET /sdf=?kfj`，nginx 眼里 `$uri` 是 `/sdf=`。
+
+**处理**
+
+生成配置时切掉 query，只拿 URI 部分做 location；`proxy_pass` 后面不带 URI，原始请求行（含 query）会原样透传，客户端无感。
+
+```python
+path_uri = path.split("?", 1)[0] or "/"      # /sdf=?kfj  →  /sdf=
+```
+
+```nginx
+location = /sdf= {
+    if ($http_upgrade = "") { rewrite ^ /index.html last; }
+    proxy_pass https://127.0.0.1:20000;      # 不带 URI，透传原始请求
+}
+```
+
+**验证**
+
+```bash
+# 注意 URL 必须加引号，否则 shell 会把 ? 当通配符
+curl -sk --http1.1 -o /dev/null -w "%{http_code}\n" \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  "https://域名/sdf=?kfj"        # 必须是 101
+```
+
+`build/test_deploy.py` 里有对应断言：带 query 的 path 必须生成 `location = /sdf= {`。
+
+---
+
+## 11. CertMode=http 与 nginx 抢 80 端口，续期必失败
+
+**现象**
+
+安装当天一切正常。两三个月后证书过期，站点和代理同时失效，`journalctl -u V2bX` 里能看到 ACME 相关报错。
+
+**根因**
+
+V2bX 的 `CertMode: "http"` 走 HTTP-01 验证，需要**自己监听 80 端口**放 challenge 文件。
+而本工具让 nginx 接管了 80 和 443，V2bX 续期时绑不上 80，验证失败。
+这是一个定时炸弹：装的时候看不出来，到期那天才炸。
+
+**处理**
+
+域名 DNS 托管在 Cloudflare 时，直接改成 DNS-01 验证，彻底绕开 80 端口：
+
+```json
+"CertConfig": {
+  "CertMode": "dns",
+  "Provider": "cloudflare",
+  "DNSEnv": {
+    "CLOUDFLARE_EMAIL": "...",
+    "CLOUDFLARE_API_KEY": "..."
+  }
+}
+```
+
+改完 `systemctl restart V2bX`。已有证书不受影响，只在到期前 30 天触发续期时才会走新流程。
+
+**验证**
+
+```bash
+openssl x509 -in /etc/V2bX/fullchain.cer -noout -enddate   # 确认证书仍在
+journalctl -u V2bX --since "2 min ago" | grep -iE "cert|acme"   # 重启后不应有报错
+```
+
+**如果 DNS 不在 Cloudflare**
+
+两个选择：一是把域名 NS 迁到 CF；二是在续期窗口前手动 `systemctl stop nginx`，续完再起。后者不可持续，只适合应急。
 
 ---
 

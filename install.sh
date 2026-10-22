@@ -200,6 +200,9 @@ DOMAIN=$(python3 -c "
 import json;print(json.load(open('/opt/hkbt-deploy/config.json')).get('domain',''))" 2>/dev/null)
 DPORT=$(python3 -c "
 import json;print(json.load(open('/opt/hkbt-deploy/config.json')).get('port','443'))" 2>/dev/null)
+PPORT=$(python3 -c "
+import json;print(json.load(open('/opt/hkbt-deploy/config.json')).get('proxy_port',''))" 2>/dev/null)
+[[ -z "$PPORT" ]] && PPORT="$DPORT"
 BRAND=$(python3 -c "
 import json;print(json.load(open('/opt/hkbt-deploy/config.json')).get('brand',''))" 2>/dev/null)
 
@@ -210,9 +213,14 @@ echo -e "${BLD}═════════════════════�
 echo
 # 443 时省略端口，其他端口显式带上
 if [[ "$DPORT" == "443" ]]; then PSUFFIX=""; else PSUFFIX=":${DPORT}"; fi
+if [[ "$PPORT" == "443" ]]; then PPSUFFIX=""; else PPSUFFIX=":${PPORT}"; fi
 [[ -n "$DOMAIN" ]] && echo -e "  网站地址   ${GRN}https://${DOMAIN}${PSUFFIX}/${NC}"
-echo -e "  代理地址   ${DOMAIN}:${DPORT}  路径 ${PATH_ARG:-（自动探测）}"
-echo -e "  共用端口   网站与代理都在 ${DPORT}"
+echo -e "  代理地址   ${DOMAIN}${PPSUFFIX}  路径 ${PATH_ARG:-（自动探测）}"
+if [[ "$PPORT" == "$DPORT" ]]; then
+  echo -e "  共用端口   网站与代理都在 ${DPORT}"
+else
+  echo -e "  端口分工   网站与面板在 ${DPORT}，代理在 ${PPORT}（客户端连 ${PPORT}）"
+fi
 [[ -n "$BRAND" ]] && echo -e "  网站品牌   ${BRAND}"
 if [[ -n "$DOMAIN" && -n "$ADMIN" ]]; then
   echo -e "  面板地址   ${GRN}https://${DOMAIN}${PSUFFIX}${ADMIN}/${NC}"

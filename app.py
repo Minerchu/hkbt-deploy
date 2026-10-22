@@ -741,7 +741,8 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     os.makedirs(os.path.dirname(NGINX_CONF), exist_ok=True)
     with open(NGINX_CONF, "w", encoding="utf-8") as f:
         f.write(conf)
-    add("生成 Nginx 配置", True, "%s（绑定 %s:%s）" % (NGINX_CONF, ip, port))
+    add("生成 Nginx 配置", True, "%s（对外 %s 端口，转发到 127.0.0.1:%s）"
+        % (NGINX_CONF, port, proxy_port))
 
     rc, out, err = run(["nginx", "-t"])
     if rc != 0:
