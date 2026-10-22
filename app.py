@@ -15,6 +15,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import random
 import re
 import secrets
 import shutil
@@ -423,6 +424,31 @@ def backup(tag):
 SITE_TPL = os.path.join(BASE, "templates", "site")
 SITES_TPL = os.path.join(BASE, "templates", "sites")
 DEFAULT_TEMPLATE = "trade"
+
+# 全自动部署时随机挑一个中性企业名。刻意选与行业无关的词，配任何模板都不违和；
+# 中英文成对，避免页面里出现「中文名 + 不相干英文」的破绽。
+BRAND_POOL = [
+    ("远洋实业", "YUANYANG"), ("恒通国际", "HENGTONG"), ("锦程集团", "JINCHENG"),
+    ("嘉禾实业", "JIAHE"), ("鼎盛国际", "DINGSHENG"), ("天工科技", "TIANGONG"),
+    ("弘毅实业", "HONGYI"), ("博远国际", "BOYUAN"), ("瑞恒集团", "RUIHENG"),
+    ("中科实业", "ZHONGKE"), ("东辰国际", "DONGCHEN"), ("万邦实业", "WANBANG"),
+    ("华宸集团", "HUACHEN"), ("明远实业", "MINGYUAN"), ("同创国际", "TONGCHUANG"),
+    ("正泰实业", "ZHENGTAI"), ("联创集团", "LIANCHUANG"), ("金桥国际", "JINQIAO"),
+    ("海纳实业", "HAINA"), ("卓越集团", "ZHUOYUE"), ("世纪实业", "SHIJI"),
+    ("长城国际", "CHANGCHENG"), ("东方实业", "DONGFANG"), ("新元集团", "XINYUAN"),
+    ("天成实业", "TIANCHENG"), ("立信国际", "LIXIN"), ("恒信实业", "HENGXIN"),
+    ("汇通集团", "HUITONG"), ("泰和实业", "TAIHE"), ("荣泰国际", "RONGTAI"),
+]
+
+
+def random_brand():
+    return random.choice(BRAND_POOL)
+
+
+def random_template():
+    keys = [t["key"] for t in list_templates()]
+    return random.choice(keys) if keys else DEFAULT_TEMPLATE
+
 
 
 def list_templates():
@@ -872,7 +898,7 @@ def merge_init_conf(cfg):
     return disk
 
 
-def cmd_init(password, port=None, path=None):
+def cmd_init(password, port=None, path=None, template=None, brand=None, auto=False):
     os.makedirs(BASE, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     cfg = load_conf()
@@ -886,13 +912,24 @@ def cmd_init(password, port=None, path=None):
     if password:
         cfg["password_hash"] = hash_pw(password, cfg["salt"])
 
+    # 全自动：模板和品牌都没指定时随机，让每台机器长得都不一样
+    if auto:
+        template = template or random_template()
+        brand = brand or random_brand()[0]
+    if template:
+        cfg["template"] = template
+    if brand:
+        cfg["brand"] = brand
+
     # 必须先落盘：do_deploy 会重新 load_conf() 读取 admin_path 来生成面板反代段，
     # 否则首次安装时 admin_path 还在内存里，Nginx 配置会缺面板入口（访问 404）
     save_conf(cfg)
 
     v = detect_v2bx()
     domain = v["domain"] or ""
-    port = str(port or v["port"] or "443")
+    # 对外端口固定 443：节点端口可能是 20000/21311，Nginx 不能去抢它。
+    # 两者不同时走分离端口（代理留在原端口），相同时由 do_deploy 收窄 sing-box。
+    port = str(port or "443")
     path = path or v["path"] or "/index"
     ip = public_ip()
 
@@ -905,11 +942,12 @@ def cmd_init(password, port=None, path=None):
     print("  代理路径   : %s" % path)
     print("  公网 IP    : %s" % (ip or "未取到"))
     print("  站点模板   : %s" % (cfg.get("template") or DEFAULT_TEMPLATE))
+    print("  网站名称   : %s" % (cfg.get("brand") or "模板默认"))
     print("  面板入口   : https://%s%s/" % (domain or "<域名>", cfg["admin_path"]))
     print("=" * 62)
 
     if v["installed"] and domain and ip:
-        ok, _steps = do_deploy(domain, port, path, None, None, cfg.get("template"))
+        ok, _steps = do_deploy(domain, port, path, None, cfg.get("brand"), cfg.get("template"))
         # 首次部署还没有站点文件，放一个占位首页
         site = DEFAULT_SITE
         os.makedirs(site, exist_ok=True)
@@ -1059,13 +1097,17 @@ def main():
     ap = argparse.ArgumentParser(description="HKBT Deploy")
     ap.add_argument("--init", action="store_true", help="初始化：探测环境并生成配置")
     ap.add_argument("--password", help="设置面板登录密码")
-    ap.add_argument("--port", help="代理端口，默认自动探测（通常 443）")
+    ap.add_argument("--port", help="对外端口，默认自动探测（通常 443）")
     ap.add_argument("--path", help="代理路径，默认自动探测（如 /index）")
+    ap.add_argument("--template", help="站点模板 key，默认沿用配置或 trade")
+    ap.add_argument("--brand", help="网站名称，默认沿用配置或模板默认品牌")
+    ap.add_argument("--auto", action="store_true",
+                    help="全自动：随机模板 + 随机品牌，适合批量装机")
     ap.add_argument("--serve", action="store_true", help="启动面板服务")
     a = ap.parse_args()
 
     if a.init:
-        cmd_init(a.password, a.port, a.path)
+        cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto)
         return
     if a.serve:
         app = create_app()
