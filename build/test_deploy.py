@@ -133,6 +133,19 @@ def main():
         else:
             print("配置校验：%s" % desc)
 
+    # path 带 query（面板里可能是 /sdf=?kfj）：location 必须只用 ? 前的部分，
+    # 否则 nginx 永远匹配不上，代理流量会掉进静态站点返回 404
+    conf_q = app.gen_nginx("hai-lian.com", "443", "/sdf=?kfj", "/var/www/hkbt",
+                           "132.226.145.154", "/tmp/c.cer", "/tmp/c.key", "/__x", "20000")
+    if "location = /sdf= {" not in conf_q:
+        print("FAIL 带 query 的 path 未正确切分 location")
+        bad += 1
+    else:
+        print("配置校验：path 带 query 时 location 取 ? 前部分")
+    if "proxy_pass https://127.0.0.1:20000;" not in conf_q:
+        print("FAIL 带 query 的 path 未正确指向代理端口")
+        bad += 1
+
     print("\n%s" % ("全部通过" if bad == 0 else "%d 项失败" % bad))
     return 1 if bad else 0
 

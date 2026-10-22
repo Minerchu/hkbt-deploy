@@ -279,6 +279,11 @@ def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, pr
     """
     proxy_port = str(proxy_port or port)
 
+    # 面板里的 path 可能带 query（例：/sdf=?kfj）。Nginx 的 location 只匹配 URI 部分，
+    # 带 ? 的整串永远匹配不上，必须切掉 query 再匹配。
+    # proxy_pass 不带 URI 时原始请求行会原样透传（含 query），客户端无感。
+    path_uri = path.split("?", 1)[0] or "/"
+
     # 绑定地址：代理在独立端口时绑 0.0.0.0 最稳（NAT 机器上公网 IP 不在网卡上，
     # 绑它会直接 bind 失败）；同端口场景必须绑本机真实持有的地址，否则会和代理抢 127.0.0.1
     if proxy_port != str(port):
@@ -387,7 +392,7 @@ server {
        mapv, domain, site_dir, ("" if str(port) == "443" else ":%s" % port),
        bind, port, h2_listen, h2_directive, domain,
        cert, key,
-       path, path, proxy_port, domain,
+       path, path_uri, proxy_port, domain,
        admin_block,
        site_dir, STATIC_EXTS, site_dir)
 
@@ -620,14 +625,14 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     _, code, _ = run("curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 %s https://%s:%s/" % (r, domain, port), shell=True)
     checks.append(("网站首页 /", code == "200", code or "连接失败"))
 
-    _, n, _ = run("curl -4 -sk -m 10 %s https://%s:%s%s | grep -c '<html'" % (r, domain, port, path), shell=True)
+    _, n, _ = run("curl -4 -sk -m 10 %s 'https://%s:%s%s' | grep -c '<html'" % (r, domain, port, path), shell=True)
     ok_page = n.strip() not in ("", "0")
     checks.append(("代理路径 %s（浏览器）" % path, ok_page, "返回站点页面" if ok_page else (n.strip() or "未返回页面")))
 
     _, wsc, _ = run(
         "curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 %s -H 'Connection: Upgrade' "
         "-H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' "
-        "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' https://%s:%s%s" % (r, domain, port, path), shell=True)
+        "-H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'https://%s:%s%s'" % (r, domain, port, path), shell=True)
     checks.append(("代理路径 %s（WebSocket）" % path, wsc in ("101", "200"), wsc or "连接失败"))
 
     _, subj, _ = run("echo | openssl s_client -connect 127.0.0.1:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (port, domain), shell=True)
