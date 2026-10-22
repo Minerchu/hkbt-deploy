@@ -144,7 +144,29 @@ if [[ -e /etc/nginx/sites-enabled/default ]]; then
   info "已禁用 sites-enabled/default（避免 80 端口冲突）"
 fi
 
-# ---------------- 6. 初始化并部署 ----------------
+# ---------------- 6. 等代理就绪 ----------------
+# 代理没跑起来就先配网站，Nginx 会先把 443 抢在手里。之后排查时同时看到
+# 「网站正常」和「代理不通」，分不清是代理挂了还是分流写错了。
+if systemctl list-unit-files 2>/dev/null | grep -q '^V2bX\.service'; then
+  info "等待 V2bX 就绪…"
+  ready=0
+  for _ in $(seq 1 40); do
+    if systemctl is-active --quiet V2bX 2>/dev/null \
+       && ss -tlnp 2>/dev/null | grep -qE 'users:\(\("(V2bX|sing-box)"'; then
+      ready=1; break
+    fi
+    sleep 3
+  done
+  if [[ $ready -eq 1 ]]; then
+    ok "V2bX 已在监听，继续部署"
+  else
+    warn "120 秒内没观察到 V2bX 的监听端口"
+    warn "代理可能配置有误：journalctl -u V2bX -n 50 --no-pager"
+    warn "继续部署网站（若代理稍后起来，Nginx 分流仍然有效）"
+  fi
+fi
+
+# ---------------- 7. 初始化并部署 ----------------
 info "探测代理环境并部署站点…"
 echo
 INIT_ARGS="--init --password $PASSWORD --port $PORT"
@@ -152,7 +174,7 @@ INIT_ARGS="--init --password $PASSWORD --port $PORT"
 python3 /opt/hkbt-deploy/app.py $INIT_ARGS || warn "初始化有告警，请查看上面的输出"
 echo
 
-# ---------------- 7. systemd 服务 ----------------
+# ---------------- 8. systemd 服务 ----------------
 info "写入 systemd 服务…"
 cat > /etc/systemd/system/hkbt-deploy.service <<'EOF'
 [Unit]
@@ -182,7 +204,7 @@ else
   err "面板服务启动失败，请查看: journalctl -u hkbt-deploy -n 50"
 fi
 
-# ---------------- 8. 证书续期自动重载 ----------------
+# ---------------- 9. 证书续期自动重载 ----------------
 info "配置证书续期自动重载…"
 cat > /usr/local/bin/hkbt-cert-reload.sh <<'EOF'
 #!/bin/bash
@@ -202,7 +224,15 @@ chmod +x /usr/local/bin/hkbt-cert-reload.sh
 ( crontab -l 2>/dev/null | grep -v hkbt-cert-reload; echo "17 */6 * * * /usr/local/bin/hkbt-cert-reload.sh" ) | crontab -
 ok "已加入定时任务（每 6 小时检查）"
 
-# ---------------- 9. 输出 ----------------
+# ---------------- 10. 配置同步 ----------------
+# 面板改端口/路径后 Nginx 不会自己变，靠这个定时比对跟上
+if python3 /opt/hkbt-deploy/app.py --install-sync >/dev/null 2>&1; then
+  ok "已启用配置同步（V2bX 重启即触发 + 每 3 分钟兜底）"
+else
+  warn "配置同步未启用，可手动执行: python3 /opt/hkbt-deploy/app.py --install-sync"
+fi
+
+# ---------------- 11. 输出 ----------------
 ADMIN=$(python3 -c "
 import json;print(json.load(open('/opt/hkbt-deploy/config.json')).get('admin_path',''))" 2>/dev/null)
 DOMAIN=$(python3 -c "
