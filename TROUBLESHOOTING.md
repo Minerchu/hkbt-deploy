@@ -240,57 +240,51 @@ iptables -S | grep 1PANEL_BASIC | head
 
 **现象**
 
-`https://域名:21311/` 返回一个空的 404，响应体 0 字节。任何人点开都知道"这不是网站"。
+`https://域名:21311/` 返回一个空的 404，响应体 0 字节。任何人点开都知道「这不是网站」。
 
 **根因**
 
 sing-box 不像 Xray 有 `fallbacks`，它不做 HTTP 回落。端口上只有代理协议，浏览器请求自然拿不到页面。
 
-**处理**
+**处理（现在已自动化）**
 
-用 NAT 把外部到代理端口的连接重定向到 443，交给 nginx 统一处理：
-
-```bash
-iptables -t nat -I PREROUTING 1 -p tcp --dport 21311 -j REDIRECT --to-ports 443
-```
-
-链路变成：
+部署时如果代理端口 ≠ 对外端口，工具会自动加一条 NAT 重定向，把外部到代理端口的连接转到 443：
 
 ```
-外部 → 21311（被 REDIRECT）→ 443 nginx
-                              ├─ 普通请求        → 网站
-                              └─ WS + 路径匹配   → 127.0.0.1:21311 sing-box
+外部 :21311 ──NAT──▶ nginx :443 ──┬─ 普通请求       → 网站
+                                  └─ WS + 路径匹配  → 127.0.0.1:21311
 ```
 
 本机回环走 `OUTPUT` 链，不经过 `PREROUTING`，所以 nginx 反代回 `127.0.0.1:21311` 不会形成环路。
 
-持久化写成 systemd oneshot（幂等，先 `-C` 检查再插入）：
-
-```ini
-[Unit]
-Description=redirect external 21311 to 443
-After=network-online.target netfilter-persistent.service docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c "/sbin/iptables -t nat -C PREROUTING -p tcp --dport 21311 -j REDIRECT --to-ports 443 2>/dev/null || /sbin/iptables -t nat -I PREROUTING 1 -p tcp --dport 21311 -j REDIRECT --to-ports 443"
-ExecStop=/bin/sh -c "/sbin/iptables -t nat -D PREROUTING -p tcp --dport 21311 -j REDIRECT --to-ports 443 2>/dev/null || true"
-
-[Install]
-WantedBy=multi-user.target
-```
+优先级 `nft` > `iptables`，规则写成 `hkbt-nat.service`（oneshot，幂等），改端口后重新部署会先清旧规则。
+关闭用 `--no-camouflage`，详见 README 的「端口伪装」章节。
 
 **验证**
 
 ```bash
 curl -sk -o /dev/null -w "%{http_code}\n" https://域名:21311/          # 200 + 首页
 curl -sk -o /dev/null -w "%{http_code}\n" https://域名:21311/不存在路径  # 404 + 定制页
+curl -sk --http1.1 -o /dev/null -w "%{http_code}\n" \
+  -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  https://域名:21311/<path>                                            # 101
 ```
+
+**如果没生效**
+
+| 检查 | 命令 |
+|---|---|
+| 规则是否存在 | `nft list table ip hkbt` 或 `iptables -t nat -S PREROUTING \| grep HKBT` |
+| 服务是否启用 | `systemctl is-enabled hkbt-nat` |
+| 规则是否被其他防火墙覆盖 | 1panel / ufw / firewalld 的规则可能排在前面 |
+| 云厂商安全组 | 代理端口需要在安全组里放行，否则连接根本到不了本机 |
 
 **副作用（重要）**
 
 代理看到的客户端源 IP 会变成 `127.0.0.1`。流量统计不受影响，但如果面板开了「同 IP 设备数限制」，多个设备可能被算成一个。多人共用节点时要留意。
+
+这个副作用来自 Nginx 反代本身：只要代理流量走 443 分流，sing-box 看到的就一定是 `127.0.0.1`，与是否加 NAT 规则无关。
 
 ---
 

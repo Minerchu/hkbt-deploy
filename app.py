@@ -801,6 +801,89 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     return checks
 
 
+# ------------------------------------------------------------------ 端口伪装
+CAMOUFLAGE_RULES = "/etc/hkbt-nat.nft"
+CAMOUFLAGE_UNIT = "hkbt-nat.service"
+
+
+def setup_camouflage(proxy_port, port, enable=True):
+    """让代理端口也能打开网站：外部连 proxy_port 的流量转到 port（Nginx）。
+
+    只作用于 PREROUTING，本机回环不受影响 —— Nginx 转发到 127.0.0.1:proxy_port
+    不会绕回自己形成环路。规则同时写成 systemd oneshot，重启后自动重放。
+    """
+    proxy_port, port = str(proxy_port), str(port)
+    if proxy_port == port:
+        return True, "同端口部署，无需伪装"
+    if not enable:
+        return True, "已关闭（camouflage=false）"
+
+    nft = shutil.which("nft")
+    ipt = shutil.which("iptables")
+    if not nft and not ipt:
+        return False, "系统里没有 nft / iptables，跳过端口伪装"
+
+    if nft:
+        body = ("table ip hkbt {\n"
+                "  chain prerouting {\n"
+                "    type nat hook prerouting priority dstnat; policy accept;\n"
+                "    tcp dport %s redirect to :%s\n"
+                "  }\n"
+                "}\n" % (proxy_port, port))
+        try:
+            with open(CAMOUFLAGE_RULES, "w", encoding="utf-8") as f:
+                f.write(body)
+        except Exception as e:
+            return False, "写入规则文件失败：%s" % e
+        run([nft, "delete", "table", "ip", "hkbt"])
+        rc, out, err = run([nft, "-f", CAMOUFLAGE_RULES])
+        if rc != 0:
+            return False, "加载 nft 规则失败：%s" % (err or out)[:200]
+        start = "%s delete table ip hkbt 2>/dev/null; %s -f %s" % (nft, nft, CAMOUFLAGE_RULES)
+        stop = "%s delete table ip hkbt 2>/dev/null || true" % nft
+    else:
+        # 老系统走 iptables：先清掉本工具以前加的规则，避免改端口后旧规则残留
+        _, cur, _ = run([ipt, "-t", "nat", "-S", "PREROUTING"])
+        for line in (cur or "").splitlines():
+            if "HKBT-CAMOUFLAGE" in line and line.startswith("-A"):
+                run([ipt, "-t", "nat", "-D"] + line.split()[1:])
+        rc, out, err = run([ipt, "-t", "nat", "-I", "PREROUTING", "1",
+                            "-p", "tcp", "--dport", proxy_port,
+                            "-j", "REDIRECT", "--to-ports", port,
+                            "-m", "comment", "--comment", "HKBT-CAMOUFLAGE"])
+        if rc != 0:
+            return False, "加载 iptables 规则失败：%s" % (err or out)[:200]
+        start = ("%s -t nat -C PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s 2>/dev/null || "
+                 "%s -t nat -I PREROUTING 1 -p tcp --dport %s -j REDIRECT --to-ports %s"
+                 % (ipt, proxy_port, port, ipt, proxy_port, port))
+        stop = ("%s -t nat -D PREROUTING -p tcp --dport %s -j REDIRECT --to-ports %s 2>/dev/null || true"
+                % (ipt, proxy_port, port))
+
+    unit = """[Unit]
+Description=HKBT camouflage: redirect external %s to %s
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c "%s"
+ExecStop=/bin/sh -c "%s"
+
+[Install]
+WantedBy=multi-user.target
+""" % (proxy_port, port, start, stop)
+    try:
+        with open("/etc/systemd/system/" + CAMOUFLAGE_UNIT, "w", encoding="utf-8") as f:
+            f.write(unit)
+        run(["systemctl", "daemon-reload"])
+        run(["systemctl", "enable", CAMOUFLAGE_UNIT])
+    except Exception as e:
+        return False, "写入 systemd 服务失败：%s" % e
+
+    return True, "外部访问 %s 会转到 %s，浏览器打开代理端口看到的是网站" % (proxy_port, port)
+
+
 def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     """完整部署流程，返回 steps 列表。
     不传 zip 时，用内置模板自动生成一个完整站点。"""
@@ -902,6 +985,10 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
         run(["systemctl", "restart", "nginx"])
     add("重载 Nginx", True, "已生效")
 
+    # 端口伪装：外部访问代理端口时也返回网站。属于增强项，失败不阻断部署。
+    okc, msgc = setup_camouflage(proxy_port, port, cfg.get("camouflage", True))
+    add("端口伪装", okc, msgc)
+
     time.sleep(2)
     checks = verify(domain, port, path, ip, proxy_port)
     for name, okk, detail in checks:
@@ -971,7 +1058,8 @@ def merge_init_conf(cfg):
     return disk
 
 
-def cmd_init(password, port=None, path=None, template=None, brand=None, auto=False):
+def cmd_init(password, port=None, path=None, template=None, brand=None, auto=False,
+             camouflage=None):
     os.makedirs(BASE, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     cfg = load_conf()
@@ -993,6 +1081,8 @@ def cmd_init(password, port=None, path=None, template=None, brand=None, auto=Fal
         cfg["template"] = template
     if brand:
         cfg["brand"] = brand
+    if camouflage is not None:
+        cfg["camouflage"] = bool(camouflage)
 
     # 必须先落盘：do_deploy 会重新 load_conf() 读取 admin_path 来生成面板反代段，
     # 否则首次安装时 admin_path 还在内存里，Nginx 配置会缺面板入口（访问 404）
@@ -1210,6 +1300,8 @@ def main():
                     help="全自动：随机模板 + 随机品牌，适合批量装机")
     ap.add_argument("--probe", action="store_true",
                     help="只探测节点配置并以 JSON 输出（端口/路径来自面板，不部署）")
+    ap.add_argument("--no-camouflage", action="store_true",
+                    help="不把代理端口的入站流量转到 Nginx（默认开启：代理端口也显示网站）")
     ap.add_argument("--serve", action="store_true", help="启动面板服务")
     a = ap.parse_args()
 
@@ -1222,7 +1314,8 @@ def main():
         sys.exit(0 if v["path"] else 2)
 
     if a.init:
-        r = cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto)
+        r = cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto,
+                     camouflage=False if a.no_camouflage else None)
         sys.exit(0 if r else 1)
     if a.serve:
         app = create_app()

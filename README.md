@@ -260,6 +260,7 @@ cd hkbt-deploy && bash install.sh
 | `--path` | **仅调试用**，强制指定代理路径 | 自动向面板 API 查询，不填 |
 | `--port` | **对外端口**（网站和面板用），不是代理端口 | `443` |
 | `--password` | 面板登录密码 | 自动生成并打印 |
+| `--no-camouflage` | 不让代理端口显示网站 | 关闭（即默认开启伪装） |
 
 > 正常情况下只需要 `--port` 和 `--password`。代理路径与代理端口都从面板读，
 > 手工填反而容易和节点不一致（面板改过 path 时，填旧值会让代理连上即断）。
@@ -275,9 +276,10 @@ cd hkbt-deploy && bash install.sh
 4. 检查端口占用，冲突时直接拒绝并说明原因
 5. 生成 Nginx 配置（含双用途 location、面板入口、静态资源缓存）
 6. `nginx -t` 校验 → reload
-7. 启动 `hkbt-deploy` 面板服务（只监听 `127.0.0.1:8899`）
-8. 配置证书续期自动 reload（每 6 小时检测一次）
-9. 打印面板地址与代理参数
+7. 加 NAT 重定向，让代理端口也返回网站（`--no-camouflage` 可跳过）
+8. 启动 `hkbt-deploy` 面板服务（只监听 `127.0.0.1:8899`）
+9. 配置证书续期自动 reload（每 6 小时检测一次）
+10. 打印面板地址与代理参数
 
 ---
 
@@ -379,35 +381,42 @@ SNI：你的域名
 
 ## 端口伪装
 
-代理端口（如 20000）对外也是可以访问的，如果不处理，扫描器连上会看到一个裸的 vless 端点。
+代理端口（如 20000）对外也是开放的。不处理的话，浏览器打开 `https://域名:20000/`
+会看到 sing-box 返回的空 404 —— 一眼就知道这个端口不是网站。
 
-工具不自动做这件事，因为不同机器防火墙不一样（iptables / nftables / 1panel）。
-需要时手动加一条 NAT 重定向，把外部发往代理端口的连接转到 443：
+**部署时会自动处理。** 代理端口与对外端口不同时，工具加一条 NAT 重定向，
+把外部发往代理端口的连接转到 443：
 
-**iptables**
-
-```bash
-iptables -t nat -I PREROUTING 1 -p tcp --dport 20000 -j REDIRECT --to-ports 443
+```
+外部 :20000 ──NAT──▶ Nginx :443 ──┬─ 无 Upgrade ──▶ 网站
+                                  └─ 有 Upgrade ──▶ 127.0.0.1:20000
 ```
 
-**nftables**
+只作用于 `PREROUTING`，本机回环不走这里，所以 Nginx 转发回代理不会形成环路。
+
+规则优先级：`nft` > `iptables`，写成 `hkbt-nat.service`（oneshot + `RemainAfterExit`），
+开机自动重放。改端口后重新部署会先清掉旧规则，不会叠加。
+
+关闭：
 
 ```bash
-nft add table ip hkbt
-nft 'add chain ip hkbt prerouting { type nat hook prerouting priority dstnat; }'
-nft add rule ip hkbt prerouting tcp dport 20000 redirect to :443
+python3 app.py --init --no-camouflage --password 你的密码
 ```
 
-效果：
+或改 `/opt/hkbt-deploy/config.json` 的 `"camouflage": false` 后重新部署。
 
-- 外部访问 `https://域名:20000/` → 看到完整网站
-- 代理流量 → Nginx 按路径转回 `127.0.0.1:20000`
-- 本机回环不受影响，不会形成环路
+手动撤销：
 
-固化到开机自启（systemd oneshot 或 `netfilter-persistent` 均可）。
+```bash
+systemctl disable --now hkbt-nat.service
+nft delete table ip hkbt          # nft 系统
+# 或
+iptables -t nat -D PREROUTING -p tcp --dport 20000 -j REDIRECT --to-ports 443
+```
 
-> 副作用：代理看到的客户端 IP 会变成 `127.0.0.1`。
-> 流量统计不受影响，但如果面板开了「同 IP 设备数限制」，多个设备可能被算成一个。
+> **副作用**：代理看到的客户端 IP 变成 `127.0.0.1`。
+> 流量统计按 UUID 算，不受影响；但面板若开了「同 IP 设备数限制」，多设备可能被算成一个。
+> 这是 Nginx 反代本身带来的，和 NAT 规则无关 —— 只要走 443 分流就是如此。
 
 ---
 
