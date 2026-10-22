@@ -232,6 +232,8 @@ def node_api_config(api, key, ntype, node_id, timeout=15):
         if _pick(data, "server_port", "serverPort", "port", "listen_port"):
             return data, ""
         err = str(_pick(data, "message", "msg", default=data))[:120]
+        if err.strip() in ("{}", "[]", "null", ""):
+            err = "面板返回空响应（可能正在重启或维护）"
     return None, err
 
 
@@ -345,6 +347,16 @@ def nginx_version():
         return (0, 0, 0)
 
 
+def _fp(domain, port, path, proxy_port):
+    """当前生效参数的指纹，写在 Nginx 配置第一行。
+
+    同步时拿它和面板最新值比：一致就什么都不做，不一致才重写。
+    放在配置文件里而不是 config.json，是因为配置文件才是真正生效的东西 ——
+    有人手改过、或文件被别的面板覆盖过，指纹就消失了，sync 会自动重建。
+    """
+    return "%s|%s|%s|%s" % (domain, port, path, proxy_port)
+
+
 def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, proxy_port=None):
     """生成共存配置。注意：必须绑公网 IP，不能绑 0.0.0.0
 
@@ -400,6 +412,7 @@ def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, pr
 
     return """# ===== 由 hkbt-deploy 自动生成，请勿手改 =====
 # 生成时间: %s
+# hkbt-fingerprint: %s
 # 代理: V2bX / sing-box  %s (ws/tls)  |  公网 %s:%s  |  路径 %s
 
 %s
@@ -472,7 +485,8 @@ server {
         access_log off;
     }
 }
-""" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), domain, public_ip, port, path,
+""" % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), _fp(domain, port, path, proxy_port),
+       domain, public_ip, port, path,
        mapv, domain, site_dir, ("" if str(port) == "443" else ":%s" % port),
        bind, port, h2_listen, h2_directive, domain,
        cert, key,
@@ -1047,6 +1061,201 @@ def do_rollback():
     return True, steps
 
 
+# ------------------------------------------------------------------ 配置同步
+SYNC_SERVICE = "hkbt-sync.service"
+SYNC_TIMER = "hkbt-sync.timer"
+V2BX_SYNC_DROPIN = "/etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf"
+
+
+def current_fingerprint():
+    """读已生效配置里的指纹。文件不存在、被改过、被覆盖都返回空串。"""
+    try:
+        with open(NGINX_CONF, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("# hkbt-fingerprint:"):
+                    return line.split(":", 1)[1].strip()
+    except Exception:
+        pass
+    return ""
+
+
+def do_sync(quiet=False, retries=3):
+    """把面板上的最新节点参数同步到本机 Nginx 配置。
+
+    与 --init 的关键区别：这里所有「取不到」都只告警、不动现有配置。
+    面板临时不可达、节点临时改成 tcp、证书还没续上 —— 这些都不该让正在
+    服务的 443 裸奔。真正需要变更时才会重写配置，写之前先备份、写之后先
+    过 nginx -t，不通过就原样退回去。
+
+    返回 (ok, msg, steps)。ok=True 表示「没有造成破坏」，包含「跳过」。
+    """
+    steps = []
+
+    def add(name, ok, msg):
+        steps.append({"name": name, "ok": bool(ok), "msg": str(msg)})
+        if not quiet or not ok:
+            log("%s | %s | %s" % ("OK  " if ok else "FAIL", name, msg))
+        return ok
+
+    cfg = load_conf()
+    if not cfg.get("domain"):
+        return True, "跳过：尚未初始化（config.json 里没有 domain）", steps
+
+    # 面板可能刚随 V2bX 一起重启，给几次重试，别因为一次抖动就放弃
+    v = None
+    for i in range(max(1, retries)):
+        v = detect_v2bx()
+        if v["api_ok"]:
+            break
+        if i < retries - 1:
+            time.sleep(5)
+
+    if not v["installed"]:
+        return True, "跳过：未检测到 V2bX", steps
+    if not v["api_ok"]:
+        return True, "跳过：面板 API 不可达（%s），保持现有配置不变" % (v["api_msg"] or "无响应"), steps
+
+    domain = v["domain"] or cfg.get("domain") or ""
+    port = str(cfg.get("port") or "443")
+    proxy_port = str(v["port"] or "")
+    path = v["path"] or ""
+
+    if not proxy_port:
+        return True, "跳过：面板没有返回节点端口，保持现有配置不变", steps
+    if not path:
+        return True, ("跳过：面板节点没有 ws path（可能已改成 tcp / reality），"
+                      "无法做路径分流，保持现有配置不变"), steps
+    if not domain:
+        return True, "跳过：取不到节点域名，保持现有配置不变", steps
+
+    # 面板上把节点端口改成和网站同端口（如 443）时，Nginx 和代理会抢同一个
+    # 监听地址，谁后起谁 bind 失败。这种改法本身就不成立，不能照抄。
+    conflict, why = port_conflict(port, proxy_port)
+    if conflict:
+        if str(proxy_port) == str(port):
+            return True, ("跳过：面板把节点端口改成了 %s，与网站对外端口相同，"
+                          "Nginx 和代理会抢同一个监听地址。请在面板把节点端口改成其他值"
+                          % proxy_port), steps
+        return True, "跳过：%s" % why, steps
+
+    want = _fp(domain, port, path, proxy_port)
+    if current_fingerprint() == want:
+        return True, "配置一致，无需变更", steps
+
+    old = ""
+    try:
+        with open(NGINX_CONF, encoding="utf-8") as f:
+            old = f.read()
+    except Exception:
+        pass
+
+    cert, key = v["cert"], v["key"]
+    if not (cert and key and os.path.exists(cert) and os.path.exists(key)):
+        return True, "跳过：证书文件还不存在（%s），保持现有配置不变" % (cert or "未配置"), steps
+
+    prev = current_fingerprint() or "（无）"
+    add("发现变更", True, "%s  →  %s" % (prev, want))
+
+    backup("sync")
+    ip = public_ip() or cfg.get("public_ip") or ""
+    conf = gen_nginx(domain, port, path, DEFAULT_SITE, ip, cert, key,
+                     cfg.get("admin_path", ""), proxy_port)
+    os.makedirs(os.path.dirname(NGINX_CONF), exist_ok=True)
+    with open(NGINX_CONF, "w", encoding="utf-8") as f:
+        f.write(conf)
+
+    rc, out, err = run(["nginx", "-t"])
+    if rc != 0:
+        if old:
+            with open(NGINX_CONF, "w", encoding="utf-8") as f:
+                f.write(old)
+        return add("Nginx 语法检查", False,
+                   "新配置未通过，已回滚到原配置：%s" % (err or out)[:300]), steps
+    add("Nginx 语法检查", True, "通过")
+
+    rc, out, err = run(["systemctl", "reload", "nginx"])
+    if rc != 0:
+        run(["systemctl", "restart", "nginx"])
+    add("重载 Nginx", True, "已生效")
+
+    # 端口变了，NAT 规则也要跟着换，否则「代理端口打开是网站」会失效
+    okc, msgc = setup_camouflage(proxy_port, port, cfg.get("camouflage", True))
+    add("端口伪装", okc, msgc)
+
+    cfg.update({"domain": domain, "port": port, "path": path,
+                "proxy_port": proxy_port, "public_ip": ip or cfg.get("public_ip", ""),
+                "last_sync": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    save_conf(cfg)
+
+    _, code, _ = run(
+        "curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 --resolve %s:%s:127.0.0.1 "
+        "https://%s:%s/" % (domain, port, domain, port), shell=True)
+    add("验证 · 网站首页", code == "200", code or "连接失败")
+
+    if code != "200":
+        return False, "已按面板重写配置并重载，但本机访问站点失败，请检查 nginx 错误日志", steps
+    return True, "已同步：代理 %s，路径 %s" % (proxy_port, path), steps
+
+
+def install_sync_units(interval_min=3):
+    """装一个 systemd timer，让面板改动自动落到 Nginx。
+
+    两个触发点：
+      1) V2bX 重启后立刻同步一次（drop-in 的 ExecStartPost，非阻塞）
+      2) 每 interval_min 分钟兜底一次 —— 面板上只改端口/路径不会重启 V2bX，
+         只能靠轮询发现
+
+    用 drop-in 而不是改 V2bX.service，是为了让 `V2bX update` 覆盖主单元时
+    这层配置仍然生效。
+    """
+    if not os.path.exists("/run/systemd/system"):
+        return False, "当前环境没有 systemd，跳过（可手动执行 app.py --sync）"
+    try:
+        py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else (shutil.which("python3") or "python3")
+        svc = """[Unit]
+Description=HKBT: sync nginx config with V2bX panel
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%s %s/app.py --sync --quiet
+Nice=10
+TimeoutStartSec=180
+""" % (py, BASE)
+
+        timer = """[Unit]
+Description=HKBT: periodic config sync
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=%dm
+AccuracySec=30s
+Unit=%s
+
+[Install]
+WantedBy=timers.target
+""" % (interval_min, SYNC_SERVICE)
+
+        dropin = """[Service]
+# 由 hkbt-deploy 写入：V2bX 重启后立刻把面板最新参数同步到 Nginx
+ExecStartPost=/bin/sh -c 'systemctl start --no-block %s || true'
+""" % SYNC_SERVICE
+
+        for path, body in (("/etc/systemd/system/" + SYNC_SERVICE, svc),
+                           ("/etc/systemd/system/" + SYNC_TIMER, timer),
+                           (V2BX_SYNC_DROPIN, dropin)):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+
+        run(["systemctl", "daemon-reload"])
+        run(["systemctl", "enable", "--now", SYNC_TIMER])
+        return True, "已启用：V2bX 重启后立即同步，之后每 %d 分钟检查一次" % interval_min
+    except Exception as e:
+        return False, "安装同步服务失败：%s" % e
+
+
 # ------------------------------------------------------------------ CLI 初始化
 def merge_init_conf(cfg):
     """初始化收尾用：以磁盘为准，只补本次生成的字段。
@@ -1300,6 +1509,13 @@ def main():
                     help="全自动：随机模板 + 随机品牌，适合批量装机")
     ap.add_argument("--probe", action="store_true",
                     help="只探测节点配置并以 JSON 输出（端口/路径来自面板，不部署）")
+    ap.add_argument("--sync", action="store_true",
+                    help="把面板最新端口/路径同步到 Nginx（幂等，无变化不动任何文件）")
+    ap.add_argument("--quiet", action="store_true", help="安静模式：只在有变更或出错时输出")
+    ap.add_argument("--install-sync", action="store_true",
+                    help="安装 systemd timer：面板改动后自动同步（V2bX 重启即触发 + 定时兜底）")
+    ap.add_argument("--sync-interval", type=int, default=3,
+                    help="定时同步间隔，单位分钟，默认 3")
     ap.add_argument("--no-camouflage", action="store_true",
                     help="不把代理端口的入站流量转到 Nginx（默认开启：代理端口也显示网站）")
     ap.add_argument("--serve", action="store_true", help="启动面板服务")
@@ -1312,6 +1528,17 @@ def main():
         print(json.dumps({k: v[k] for k in keys}, ensure_ascii=False))
         # 退出码 2 表示「面板没给出 path」，调用方据此中止，不要继续部署
         sys.exit(0 if v["path"] else 2)
+
+    if a.install_sync:
+        ok, msg = install_sync_units(a.sync_interval)
+        print(("OK   " if ok else "FAIL ") + msg)
+        sys.exit(0 if ok else 1)
+
+    if a.sync:
+        ok, msg, _steps = do_sync(quiet=a.quiet)
+        if not a.quiet or not ok or not msg.startswith("配置一致"):
+            print(("OK    " if ok else "FAIL  ") + msg)
+        sys.exit(0 if ok else 1)
 
     if a.init:
         r = cmd_init(a.password, a.port, a.path, a.template, a.brand, a.auto,

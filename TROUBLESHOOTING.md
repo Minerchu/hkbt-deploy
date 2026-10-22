@@ -21,6 +21,8 @@
 | 证书到期后续期失败，站点和代理一起失效 | [11](#11-certmodehttp-与-nginx-抢-80-端口续期必失败) |
 | 有的网站能开有的打不开，日志里有 network unreachable | [12](#12-没有-ipv6-出口但-dns-返回-aaaa网站打不开证书续不上) |
 | 部署全绿但代理连上即断，配置里 location 是个猜的路径 | [13](#13-面板读不到-path-时不能用默认值兜底) |
+| 面板改过端口/路径后，网站正常但代理连不上 | [14](#14-面板改了端口或路径nginx-还停在旧值) |
+| V2bX 起不来，网站却先把 443 占了，两个问题混在一起 | [15](#15-代理没起来就部署网站问题会搅在一起) |
 
 ---
 
@@ -568,6 +570,103 @@ curl -s "$(python3 -c "import json;print(json.load(open('/etc/V2bX/config.json')
 
 Xboard 与 V2board 用同一个端点，但部分分支会把结果包在 `{"data": {...}}` 里，
 字段也可能用 `network_settings`。工具两套都认，不需要改配置。
+
+---
+
+## 14. 面板改了端口或路径，Nginx 还停在旧值
+
+**现象**
+
+在面板上把节点端口从 20000 改成 21000（或者把 ws path 从 `/sdf=?kfj` 改成别的），
+客户端全部连不上。但 `https://域名/` 打得开，证书正常，`systemctl status nginx` 也是 active。
+
+**根因**
+
+V2bX 的端口和路径是**运行时从面板拉**的：重启一次就换新值，磁盘上没有副本。
+Nginx 的配置却是静态的 —— 里面写死了 `proxy_pass https://127.0.0.1:20000` 和
+`location ~ ^/sdf=?$`。面板改了值，V2bX 跟着变，Nginx 不知道。
+
+于是流量按旧规则转发到一个已经没人监听的端口，或者按旧路径匹配不上，掉进静态站点。
+
+**判断**
+
+```bash
+# Nginx 认为的端口/路径（第一行指纹）
+head -3 /etc/nginx/conf.d/hkbt-deploy.conf
+
+# 面板真实的值
+python3 /opt/hkbt-deploy/app.py --probe
+
+# 代理实际在听哪个端口
+ss -lntp | grep -E 'V2bX|sing-box'
+```
+
+三者对不上就是这个问题。
+
+**处理**
+
+```bash
+python3 /opt/hkbt-deploy/app.py --sync
+```
+
+指纹一致时会输出「配置一致，无需变更」，不一致时会重写配置、重载 Nginx、重建 NAT 规则。
+
+如果提示「跳过：面板 API 不可达」，说明是面板本身不通，不是同步逻辑的问题，
+先修面板连通性 —— 这时保持原配置不动是**故意的**，避免站点下线。
+
+**预防**
+
+安装脚本会自动启用 `hkbt-sync.timer`，V2bX 重启后立刻同步一次，之后每 3 分钟兜底：
+
+```bash
+systemctl list-timers hkbt-sync.timer
+journalctl -u hkbt-sync -n 30
+```
+
+---
+
+## 15. 代理没起来就部署网站，问题会搅在一起
+
+**现象**
+
+一键装完，V2bX 因为配置写错（节点 ID 不对、端口被占、证书路径错）一直起不来。
+但网站是好的，`https://域名/` 能打开，看起来"装成功了"。
+
+**根因**
+
+装网站的脚本只检查了 `config.json` 里有没有节点、证书文件在不在，没检查代理**真的跑起来了**。
+结果 Nginx 先接管了 443，代理在后台反复重启失败。这时候去排查，会同时看到
+「网站正常」和「代理不通」两个信号，很难判断到底是代理挂了，还是 Nginx 分流写错了。
+
+**处理**
+
+现在的 `hkbt.sh` 会在部署前做三道检查，任何一道不过就停下来，不碰 443：
+
+```bash
+systemctl is-active V2bX                       # 1. 服务在跑
+ss -tlnp | grep -E 'V2bX|sing-box'             # 2. 节点端口在监听（最硬的证据）
+journalctl -u V2bX -n 200 | grep -iE \
+  'panic|fatal|address already in use|invalid config'   # 3. 日志里没有致命错误
+```
+
+端口在监听就直接放行（说明代理确实可用）；没监听才去看日志找原因，
+命中致命关键词立刻中止并打印那几行，不用等满 150 秒超时。
+
+**验证**
+
+```bash
+# 代理是否真的在跑
+ss -lntp | grep -E 'V2bX|sing-box'
+
+# 有没有致命错误
+journalctl -u V2bX -n 100 --no-pager | grep -iE 'panic|fatal|error'
+
+# 修好后重新部署网站
+bash hkbt.sh
+```
+
+> 顺序是「先确认代理能用，再配网站」，不是「一起装完再看」。
+> 代理配错时网站不部署，443 空着反而是好事 —— 至少只有一个问题要查。
 
 ---
 

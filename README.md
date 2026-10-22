@@ -23,6 +23,7 @@ https://你的域名/<路径>    →  代理握手（101）
 - [站点模板](#站点模板)
 - [客户端配置](#客户端配置)
 - [端口伪装](#端口伪装)
+- [配置同步](#配置同步)
 - [证书策略](#证书策略)
 - [运维](#运维)
 - [文件说明](#文件说明)
@@ -417,6 +418,87 @@ iptables -t nat -D PREROUTING -p tcp --dport 20000 -j REDIRECT --to-ports 443
 > **副作用**：代理看到的客户端 IP 变成 `127.0.0.1`。
 > 流量统计按 UUID 算，不受影响；但面板若开了「同 IP 设备数限制」，多设备可能被算成一个。
 > 这是 Nginx 反代本身带来的，和 NAT 规则无关 —— 只要走 443 分流就是如此。
+
+---
+
+## 配置同步
+
+面板上的节点端口和路径是**运行时下发**的：V2bX 每次启动都从面板重新拉一遍，本机磁盘上没有副本。Nginx 的 `location` 却是静态写死的。所以只要面板上改过端口或路径，就会出现一个很隐蔽的故障：
+
+> 网站还开着，代理已经连不上了 —— 因为 Nginx 还在往旧端口转发，或者还在匹配旧路径。
+
+`--sync` 就是补这个缺口：**定期比对面板最新值和本机已生效值，不一致就重写 Nginx 并重载**。
+
+### 判断依据
+
+每次生成的 Nginx 配置第一行带一个指纹：
+
+```nginx
+# hkbt-fingerprint: jpcdn.cctv6.de|443|/sdf=?kfj|20000
+#                  域名          对外端口 代理路径  代理端口
+```
+
+同步时重新算一遍指纹，和文件里的比：
+
+| 情况 | 行为 |
+|---|---|
+| 指纹一致 | 什么都不做，不重载 Nginx |
+| 指纹不一致 | 备份 → 重写配置 → `nginx -t` → 重载 → 更新 NAT 规则 |
+| 配置文件不见了（被别的面板覆盖/删除） | 自动重建 |
+| `nginx -t` 不通过 | 原样写回旧配置，不重载 |
+
+指纹存在 Nginx 配置里而不是 `config.json` 里，是因为**配置文件才是真正生效的东西**。`config.json` 和实际配置脱节时，只有指纹能暴露出来。
+
+### 取不到值时一律不动
+
+这是同步和首次部署最大的区别：
+
+| 情况 | 首次部署（`--init`） | 同步（`--sync`） |
+|---|---|---|
+| 面板 API 不可达 | 中止，不部署 | 跳过，保持现有配置 |
+| 节点没有 ws path（改成 tcp/reality） | 中止 | 跳过，保持现有配置 |
+| 证书文件还没签发 | 中止 | 跳过，保持现有配置 |
+| 面板端口和网站端口撞了 | 报错 | 跳过，保持现有配置 |
+
+理由很直接：**443 已经在服务了**。面板临时重启一次、证书续期时文件闪一下，都不该让站点下线裸奔。同步只做「确认能改对」的变更，其余情况留原样并在日志里记一笔。
+
+### 触发时机
+
+装完会自动启用两个触发点：
+
+```bash
+# 1) V2bX 重启后立刻同步一次（systemd drop-in，非阻塞）
+/etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf
+
+# 2) 每 3 分钟兜底一次（面板上只改端口/路径不会重启 V2bX，只能轮询）
+systemctl list-timers hkbt-sync.timer
+```
+
+用 drop-in 而不是改 `V2bX.service` 主文件，是为了让 `V2bX update` 覆盖主单元时这层配置仍然生效。
+
+### 手动操作
+
+```bash
+python3 /opt/hkbt-deploy/app.py --sync              # 立刻同步一次
+python3 /opt/hkbt-deploy/app.py --sync --quiet     # 安静模式，无变化不输出
+python3 /opt/hkbt-deploy/app.py --install-sync     # 重装定时任务
+python3 /opt/hkbt-deploy/app.py --install-sync --sync-interval 10   # 改成 10 分钟
+
+systemctl status hkbt-sync.timer                   # 定时器状态
+systemctl start hkbt-sync.service                  # 手动触发一次
+journalctl -u hkbt-sync -n 50                      # 同步日志
+```
+
+关掉同步：
+
+```bash
+systemctl disable --now hkbt-sync.timer
+rm /etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf
+systemctl daemon-reload
+```
+
+> 同步只改 Nginx 和 NAT 规则，**不碰 V2bX 配置、不重启代理**。
+> 代理本身的参数永远以面板为准，这套工具只负责让网站这一层跟上。
 
 ---
 
