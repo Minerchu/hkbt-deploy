@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# Alpine 默认没有 bash，而本脚本用了 [[ ]]、数组等 bash 语法。
+# 用 sh install.sh 启动时先自动补装 bash 再重新执行，否则会一路报错。
+if [ -z "${BASH_VERSION:-}" ]; then
+    if command -v apk >/dev/null 2>&1; then
+        echo "检测到 Alpine，正在安装 bash..."
+        apk add --no-cache bash >/dev/null 2>&1
+        command -v bash >/dev/null 2>&1 && exec bash "$0" "$@"
+    fi
+    echo "本脚本需要 bash，请先安装：apk add bash  或  apt install bash"
+    exit 1
+fi
+
 # ============================================================
 #  HKBT Deploy — 一键安装脚本
 #  V2bX(sing-box) 与网站共存部署面板
@@ -61,7 +73,12 @@ if [[ -n "$LOCAL_DIR" && -f "$LOCAL_DIR/app.py" ]]; then
   info "使用本地源码：$SRC"
 else
   info "从 GitHub 下载源码…"
-  command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl >/dev/null 2>&1; }
+  if ! command -v curl >/dev/null 2>&1; then
+    if command -v apk >/dev/null 2>&1; then apk add --no-cache curl >/dev/null 2>&1
+    elif command -v apt-get >/dev/null 2>&1; then apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl >/dev/null 2>&1
+    elif command -v yum >/dev/null 2>&1; then yum install -y curl >/dev/null 2>&1
+    fi
+  fi
   TMP="$(mktemp -d)"
   curl -fsSL "$TARBALL" -o "$TMP/hkbt.tar.gz" || err "下载失败：${TARBALL}"
   tar xzf "$TMP/hkbt.tar.gz" -C "$TMP"
@@ -74,25 +91,48 @@ fi
 info "检查并安装依赖…"
 export DEBIAN_FRONTEND=noninteractive
 
+# Debian/Ubuntu 用 apt，Alpine 用 apk，RHEL 系用 yum
+PKG=""
+if command -v apt-get >/dev/null 2>&1; then PKG="apt"
+elif command -v apk >/dev/null 2>&1; then PKG="apk"
+elif command -v yum >/dev/null 2>&1; then PKG="yum"
+fi
+
+pkg_install() {
+  case "$PKG" in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null 2>&1 ;;
+    apk) apk add --no-cache "$@" >/dev/null 2>&1 ;;
+    yum) yum install -y "$@" >/dev/null 2>&1 ;;
+  esac
+}
+
+flask_pkg() {
+  case "$PKG" in
+    apk) echo "py3-flask" ;;
+    yum) echo "python3-flask" ;;
+    *)   echo "python3-flask" ;;
+  esac
+}
+
 if ! command -v nginx >/dev/null 2>&1; then
-  apt-get update -qq >/dev/null 2>&1 || true
-  apt-get install -y -qq nginx >/dev/null 2>&1 || err "Nginx 安装失败"
-  ok "Nginx 已安装"
+  [[ "$PKG" == "apt" ]] && apt-get update -qq >/dev/null 2>&1
+  pkg_install nginx || err "Nginx 安装失败"
+  command -v nginx >/dev/null 2>&1 && ok "Nginx 已安装"
 else
   ok "Nginx 已存在 ($(nginx -v 2>&1 | cut -d/ -f2))"
 fi
 
 if ! python3 -c "import flask" >/dev/null 2>&1; then
-  apt-get install -y -qq python3-flask >/dev/null 2>&1 \
-    || pip3 install --quiet flask >/dev/null 2>&1 \
-    || err "Flask 安装失败，请手动执行: apt install python3-flask"
+  pkg_install "$(flask_pkg)" || pip3 install --quiet flask >/dev/null 2>&1 \
+    || err "Flask 安装失败，请手动安装 python3-flask / py3-flask"
   ok "Flask 已安装"
 else
   ok "Flask 已存在"
 fi
 
-command -v openssl >/dev/null 2>&1 || apt-get install -y -qq openssl >/dev/null 2>&1 || true
-command -v unzip  >/dev/null 2>&1 || apt-get install -y -qq unzip >/dev/null 2>&1 || true
+command -v openssl >/dev/null 2>&1 || pkg_install openssl
+command -v unzip   >/dev/null 2>&1 || pkg_install unzip
+command -v ss      >/dev/null 2>&1 || pkg_install iproute2
 
 # 本机没有 IPv6 出口时，DNS 仍会返回 AAAA，程序先连 IPv6 会卡住（表现为「网站打不开」）。
 # 只调整 glibc 排序让 IPv4 优先，不动 IPv6 栈，避免影响依赖双栈的服务。
@@ -147,12 +187,19 @@ fi
 # ---------------- 6. 等代理就绪 ----------------
 # 代理没跑起来就先配网站，Nginx 会先把 443 抢在手里。之后排查时同时看到
 # 「网站正常」和「代理不通」，分不清是代理挂了还是分流写错了。
-if systemctl list-unit-files 2>/dev/null | grep -q '^V2bX\.service'; then
+v2bx_present=0
+if systemctl list-unit-files 2>/dev/null | grep -q '^V2bX\.service'; then v2bx_present=1
+elif [[ -x /etc/init.d/V2bX ]]; then v2bx_present=1
+fi
+if [[ $v2bx_present -eq 1 ]]; then
   info "等待 V2bX 就绪…"
   ready=0
   for _ in $(seq 1 40); do
-    if systemctl is-active --quiet V2bX 2>/dev/null \
-       && ss -tlnp 2>/dev/null | grep -qE 'users:\(\("(V2bX|sing-box)"'; then
+    running=0
+    if systemctl is-active --quiet V2bX 2>/dev/null; then running=1
+    elif rc-service V2bX status >/dev/null 2>&1; then running=1
+    fi
+    if [[ $running -eq 1 ]] && ss -tlnp 2>/dev/null | grep -qE 'users:\(\("(V2bX|sing-box)"'; then
       ready=1; break
     fi
     sleep 3
@@ -174,9 +221,10 @@ INIT_ARGS="--init --password $PASSWORD --port $PORT"
 python3 /opt/hkbt-deploy/app.py $INIT_ARGS || warn "初始化有告警，请查看上面的输出"
 echo
 
-# ---------------- 8. systemd 服务 ----------------
-info "写入 systemd 服务…"
-cat > /etc/systemd/system/hkbt-deploy.service <<'EOF'
+# ---------------- 8. 面板服务 ----------------
+info "写入面板服务…"
+if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+  cat > /etc/systemd/system/hkbt-deploy.service <<'EOF'
 [Unit]
 Description=HKBT Deploy Panel
 After=network.target nginx.service
@@ -193,21 +241,49 @@ PrivateTmp=true
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable hkbt-deploy >/dev/null 2>&1
-systemctl restart hkbt-deploy
-sleep 2
+  systemctl daemon-reload
+  systemctl enable hkbt-deploy >/dev/null 2>&1
+  systemctl restart hkbt-deploy
+  sleep 2
+  if systemctl is-active --quiet hkbt-deploy; then
+    ok "面板服务已启动 (127.0.0.1:8899)"
+  else
+    err "面板服务启动失败，请查看: journalctl -u hkbt-deploy -n 50"
+  fi
+elif command -v rc-service >/dev/null 2>&1; then
+  cat > /etc/init.d/hkbt-deploy <<'EOF'
+#!/sbin/openrc-run
+name="HKBT Deploy Panel"
+command="/usr/bin/python3"
+command_args="/opt/hkbt-deploy/app.py --serve"
+command_user="root"
+command_background="yes"
+pidfile="/run/hkbt-deploy.pid"
+output_log="/var/log/hkbt-deploy-panel.log"
+error_log="/var/log/hkbt-deploy-panel.err"
 
-if systemctl is-active --quiet hkbt-deploy; then
-  ok "面板服务已启动 (127.0.0.1:8899)"
+depend() {
+    need net
+    after nginx
+}
+EOF
+  chmod +x /etc/init.d/hkbt-deploy
+  rc-update add hkbt-deploy default >/dev/null 2>&1
+  rc-service hkbt-deploy restart >/dev/null 2>&1
+  sleep 2
+  if rc-service hkbt-deploy status >/dev/null 2>&1; then
+    ok "面板服务已启动 (127.0.0.1:8899)"
+  else
+    err "面板服务启动失败，请查看: tail -20 /var/log/hkbt-deploy-panel.err"
+  fi
 else
-  err "面板服务启动失败，请查看: journalctl -u hkbt-deploy -n 50"
+  warn "未检测到 systemd / OpenRC，跳过面板服务（可手动运行 app.py --serve）"
 fi
 
 # ---------------- 9. 证书续期自动重载 ----------------
 info "配置证书续期自动重载…"
 cat > /usr/local/bin/hkbt-cert-reload.sh <<'EOF'
-#!/bin/bash
+#!/bin/sh
 # V2bX 通过 Cloudflare DNS 续签证书后，Nginx 需要 reload 才能加载新证书
 CERT=/etc/V2bX/fullchain.cer
 STAMP=/var/run/hkbt-cert.stamp
@@ -216,12 +292,25 @@ CUR=$(stat -c %Y "$CERT")
 OLD=$(cat "$STAMP" 2>/dev/null || echo 0)
 if [ "$CUR" != "$OLD" ]; then
   echo "$CUR" > "$STAMP"
-  /usr/sbin/nginx -t >/dev/null 2>&1 && /bin/systemctl reload nginx
+  nginx -t >/dev/null 2>&1 && { systemctl reload nginx 2>/dev/null || rc-service nginx reload 2>/dev/null || nginx -s reload; }
   echo "$(date -Is) cert changed -> nginx reloaded" >> /var/log/hkbt-cert.log
 fi
 EOF
 chmod +x /usr/local/bin/hkbt-cert-reload.sh
-( crontab -l 2>/dev/null | grep -v hkbt-cert-reload; echo "17 */6 * * * /usr/local/bin/hkbt-cert-reload.sh" ) | crontab -
+add_cron() {
+  local line="$1" marker="$2" f="/var/spool/cron/crontabs/root"
+  if command -v crontab >/dev/null 2>&1; then
+    ( crontab -l 2>/dev/null | grep -v "$marker"; echo "$line" ) | crontab - 2>/dev/null && return 0
+  fi
+  mkdir -p "$(dirname "$f")"
+  { [ -f "$f" ] && grep -v "$marker" "$f" 2>/dev/null; echo "$line"; } > "$f.tmp"
+  mv "$f.tmp" "$f"; chmod 600 "$f"
+}
+add_cron "17 */6 * * * /usr/local/bin/hkbt-cert-reload.sh" "hkbt-cert-reload"
+if command -v rc-service >/dev/null 2>&1; then
+  rc-service crond status >/dev/null 2>&1 || rc-service crond start >/dev/null 2>&1
+  rc-update add crond default >/dev/null 2>&1
+fi
 ok "已加入定时任务（每 6 小时检查）"
 
 # ---------------- 10. 配置同步 ----------------
@@ -266,7 +355,11 @@ if [[ -n "$DOMAIN" && -n "$ADMIN" ]]; then
 fi
 echo -e "  面板密码   ${YEL}${PASSWORD}${NC}"
 echo
-echo -e "  服务状态   systemctl status hkbt-deploy"
+if command -v rc-service >/dev/null 2>&1; then
+  echo -e "  服务状态   rc-service hkbt-deploy status"
+else
+  echo -e "  服务状态   systemctl status hkbt-deploy"
+fi
 echo -e "  部署日志   tail -f /var/log/hkbt-deploy.log"
 echo
 echo -e "${BLD}════════════════════════════════════════════════${NC}"

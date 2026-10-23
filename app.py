@@ -31,7 +31,6 @@ CONF_PATH = os.path.join(BASE, "config.json")
 BACKUP_DIR = os.path.join(BASE, "backups")
 V2BX_CONF = "/etc/V2bX/config.json"
 V2BX_SYSTEMD_DROPIN = "/etc/systemd/system/V2bX.service.d/10-listen.conf"
-NGINX_CONF = "/etc/nginx/conf.d/hkbt-deploy.conf"
 CERT_RELOAD = "/usr/local/bin/hkbt-cert-reload.sh"
 LOG_FILE = "/var/log/hkbt-deploy.log"
 PANEL_PORT = 8899
@@ -59,6 +58,126 @@ def run(cmd, timeout=90, shell=False):
         return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
     except Exception as e:
         return 1, "", str(e)
+
+
+# ------------------------------------------------------------------ 服务管理
+# 整套部署要启停 nginx、重启 V2bX、装定时同步。Debian/Ubuntu 用 systemd，
+# Alpine 用 OpenRC，命令完全不同。这里统一成一层，上层不再直接写 systemctl。
+def init_system():
+    if shutil.which("systemctl") and os.path.isdir("/run/systemd/system"):
+        return "systemd"
+    if shutil.which("rc-service") or os.path.isfile("/sbin/openrc-run"):
+        return "openrc"
+    return "none"
+
+
+INIT = init_system()
+
+
+def svc(action, name):
+    """统一服务操作：start / stop / restart / reload / enable / disable"""
+    if INIT == "systemd":
+        return run(["systemctl", action, name])
+    if INIT == "openrc":
+        if action in ("start", "stop", "restart", "reload", "status"):
+            return run(["rc-service", name, action])
+        if action == "enable":
+            return run(["rc-update", "add", name, "default"])
+        if action == "disable":
+            return run(["rc-update", "del", name, "default"])
+        return 1, "", "OpenRC 不支持的操作：%s" % action
+    # 容器 / 无 init 的环境：退化成直接调二进制，方便在镜像里跑自检
+    if name == "nginx":
+        if action == "reload":
+            return run(["nginx", "-s", "reload"])
+        if action in ("start", "restart"):
+            return run(["nginx"])
+        if action == "stop":
+            return run(["nginx", "-s", "quit"])
+    return 1, "", "本机没有 systemd / OpenRC，无法管理服务 %s" % name
+
+
+def svc_active(name):
+    if INIT == "systemd":
+        rc, _, _ = run(["systemctl", "is-active", "--quiet", name])
+        return rc == 0
+    if INIT == "openrc":
+        # rc-service status：running 返回 0，stopped 返回 3
+        rc, out, _ = run(["rc-service", name, "status"])
+        return rc == 0 and "started" in (out or "").lower()
+    if name == "nginx":
+        rc, out, _ = run(["ss", "-tlnp"])
+        return "nginx" in out
+    return False
+
+
+def svc_exists(name):
+    if INIT == "systemd":
+        _, out, _ = run(["systemctl", "list-unit-files", name + ".service"])
+        return (name + ".service") in out
+    if INIT == "openrc":
+        return os.path.exists("/etc/init.d/" + name)
+    return False
+
+
+def svc_logs(name, n=60):
+    """取服务最近日志：systemd 走 journal，OpenRC 走 syslog / 日志文件。"""
+    if INIT == "systemd":
+        rc, out, _ = run(["journalctl", "-u", name, "-n", str(n), "--no-pager"])
+        return out if rc == 0 else ""
+    parts = []
+    for p in ("/var/log/%s.log" % name.lower(), "/var/log/messages"):
+        if os.path.exists(p):
+            _, out, _ = run(["tail", "-n", str(n), p])
+            if out:
+                parts.append(out)
+    return "\n".join(parts)
+
+
+def install_service(name, systemd_unit, openrc_script, enable=True):
+    """按当前 init 系统落一份服务定义，返回 (ok, 路径或原因)。"""
+    try:
+        if INIT == "systemd":
+            path = "/etc/systemd/system/%s.service" % name
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(systemd_unit)
+            run(["systemctl", "daemon-reload"])
+            if enable:
+                run(["systemctl", "enable", name])
+            return True, path
+        if INIT == "openrc":
+            path = "/etc/init.d/" + name
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(openrc_script)
+            os.chmod(path, 0o755)
+            if enable:
+                run(["rc-update", "add", name, "default"])
+            return True, path
+    except Exception as e:
+        return False, str(e)
+    return False, "本机没有 systemd / OpenRC，跳过服务注册"
+
+
+def nginx_conf_dir():
+    """Nginx 的站点配置目录。Alpine 的 nginx 包用 http.d，别的发行版用 conf.d。"""
+    for d in ("/etc/nginx/conf.d", "/etc/nginx/http.d"):
+        if os.path.isdir(d):
+            return d
+    return "/etc/nginx/conf.d"
+
+
+def nginx_user():
+    """Nginx 运行用户：Debian 系是 www-data，Alpine/RHEL 是 nginx。"""
+    for u in ("www-data", "nginx"):
+        rc, _, _ = run(["id", "-u", u])
+        if rc == 0:
+            return u
+    return ""
+
+
+# 站点配置路径要在 nginx_conf_dir() 之后才能确定，所以放在这里而不是常量区
+NGINX_CONF = os.path.join(nginx_conf_dir(), "hkbt-deploy.conf")
 
 
 def load_conf():
@@ -347,6 +466,9 @@ def nginx_version():
         return (0, 0, 0)
 
 
+CONF_VERSION = "2"   # 改 gen_nginx 模板时 +1，让已有部署自动重写一次
+
+
 def _fp(domain, port, path, proxy_port):
     """当前生效参数的指纹，写在 Nginx 配置第一行。
 
@@ -354,7 +476,7 @@ def _fp(domain, port, path, proxy_port):
     放在配置文件里而不是 config.json，是因为配置文件才是真正生效的东西 ——
     有人手改过、或文件被别的面板覆盖过，指纹就消失了，sync 会自动重建。
     """
-    return "%s|%s|%s|%s" % (domain, port, path, proxy_port)
+    return "v%s|%s|%s|%s|%s" % (CONF_VERSION, domain, port, path, proxy_port)
 
 
 def gen_nginx(domain, port, path, site_dir, public_ip, cert, key, admin_path, proxy_port=None):
@@ -431,7 +553,7 @@ server {
     ssl_certificate     %s;
     ssl_certificate_key %s;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_session_cache shared:SSL:10m;
+    ssl_session_cache shared:hkbt_ssl:10m;
     ssl_session_timeout 1d;
     ssl_prefer_server_ciphers off;
 
@@ -637,7 +759,9 @@ def generate_default_site(brand, domain, site_dir, template=None):
             except Exception:
                 pass
 
-    run(["chown", "-R", "www-data:www-data", site_dir])
+    nu = nginx_user()
+    if nu:
+        run(["chown", "-R", "%s:%s" % (nu, nu), site_dir])
     return True, "已生成「%s」模板站点：%d 个页面 / %d 张配图，品牌名「%s」" % (
         key, pages, imgs, brand)
 
@@ -679,8 +803,7 @@ def narrow_v2bx(target="127.0.0.1"):
     """把 sing-box 收窄到回环地址"""
     if not os.path.exists(V2BX_CONF):
         return True, "未检测到 V2bX，跳过"
-    rc, units, _ = run(["systemctl", "list-unit-files", "V2bX.service"])
-    if "V2bX.service" not in units:
+    if not svc_exists("V2bX"):
         return True, "未检测到 V2bX 服务，跳过收窄"
     with open(V2BX_CONF, encoding="utf-8") as f:
         txt = f.read()
@@ -691,15 +814,17 @@ def narrow_v2bx(target="127.0.0.1"):
     with open(V2BX_CONF, "w", encoding="utf-8") as f:
         f.write(new)
 
-    # 固化：防止 V2bX 重启后改回
-    os.makedirs(os.path.dirname(V2BX_SYSTEMD_DROPIN), exist_ok=True)
-    with open(V2BX_SYSTEMD_DROPIN, "w", encoding="utf-8") as f:
-        f.write("[Service]\nExecStartPre=/bin/sed -i 's/\"ListenIP\": \"::\"/\"ListenIP\": \"%s\"/' %s\n"
-                % (target, V2BX_CONF))
-    run(["systemctl", "daemon-reload"])
-    run(["systemctl", "restart", "V2bX"])
+    # 固化：防止 V2bX 重启后改回。systemd 用 drop-in，OpenRC 改不了别人的
+    # init 脚本，只在当前进程生效，重启后由配置本身保证（已写进 config.json）
+    if INIT == "systemd":
+        os.makedirs(os.path.dirname(V2BX_SYSTEMD_DROPIN), exist_ok=True)
+        with open(V2BX_SYSTEMD_DROPIN, "w", encoding="utf-8") as f:
+            f.write("[Service]\nExecStartPre=/bin/sed -i 's/\"ListenIP\": \"::\"/\"ListenIP\": \"%s\"/' %s\n"
+                    % (target, V2BX_CONF))
+        run(["systemctl", "daemon-reload"])
+    svc("restart", "V2bX")
     time.sleep(6)
-    rc, out, _ = run(["ss", "-tlnp"])
+    _, out, _ = run(["ss", "-tlnp"])
     ok = ("%s:%s" % (target, "443")) in out or re.search(r"%s:\d+" % re.escape(target), out)
     return ok, "V2bX 监听已收窄到 %s" % target if ok else "收窄后未观察到回环监听，请检查"
 
@@ -733,7 +858,7 @@ def normalize_listen_ip():
         n["ListenIP"] = "0.0.0.0"
     with open(V2BX_CONF, "w", encoding="utf-8") as f:
         json.dump(d, f, indent=2, ensure_ascii=False)
-    run(["systemctl", "restart", "V2bX"])
+    svc("restart", "V2bX")
     time.sleep(4)
     return True, "本机无 IPv6 出口，监听地址已改为 0.0.0.0"
 
@@ -768,7 +893,8 @@ def unzip_site(zip_path, site_dir):
 
     if not os.path.exists(os.path.join(site_dir, "index.html")):
         return False, "压缩包内未找到 index.html（若站点在子目录，工具已自动提升，但仍未找到）"
-    rc, _, _ = run(["chown", "-R", "www-data:www-data", site_dir])
+    nu = nginx_user()
+    rc = 0 if not nu else run(["chown", "-R", "%s:%s" % (nu, nu), site_dir])[0]
     n = sum(len(fs) for _, _, fs in os.walk(site_dir))
     return True, "已解压 %d 个文件到 %s" % (n, site_dir)
 
@@ -801,8 +927,7 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     checks.append(("证书匹配域名", ok_cert, subj.replace("subject=", "") or "未取到（若自签证书可忽略）"))
 
     _, ls, _ = run(["ss", "-tlnp"])
-    _, units, _ = run(["systemctl", "list-unit-files", "V2bX.service"])
-    has_v2bx = "V2bX.service" in units
+    has_v2bx = svc_exists("V2bX")
     if has_v2bx and proxy_port == str(port):
         checks.append(("sing-box 仅本机监听", ("127.0.0.1:%s" % proxy_port) in ls,
                        "127.0.0.1:%s" % proxy_port if ("127.0.0.1:%s" % proxy_port) in ls else "未收窄，请检查"))
@@ -821,7 +946,7 @@ def verify(domain, port, path, public_ip, proxy_port=None):
 
 # ------------------------------------------------------------------ 端口伪装
 CAMOUFLAGE_RULES = "/etc/hkbt-nat.nft"
-CAMOUFLAGE_UNIT = "hkbt-nat.service"
+CAMOUFLAGE_UNIT = "hkbt-nat"
 
 
 def setup_camouflage(proxy_port, port, enable=True):
@@ -891,13 +1016,34 @@ ExecStop=/bin/sh -c "%s"
 [Install]
 WantedBy=multi-user.target
 """ % (proxy_port, port, start, stop)
-    try:
-        with open("/etc/systemd/system/" + CAMOUFLAGE_UNIT, "w", encoding="utf-8") as f:
-            f.write(unit)
-        run(["systemctl", "daemon-reload"])
-        run(["systemctl", "enable", CAMOUFLAGE_UNIT])
-    except Exception as e:
-        return False, "写入 systemd 服务失败：%s" % e
+
+    openrc = """#!/sbin/openrc-run
+description="HKBT camouflage: redirect external %s to %s"
+
+depend() {
+    need net
+    after firewall
+}
+
+start() {
+    ebegin "Redirecting %s -> %s"
+    /bin/sh -c '%s'
+    eend $?
+}
+
+stop() {
+    ebegin "Removing HKBT camouflage rules"
+    /bin/sh -c '%s'
+    eend $?
+}
+""" % (proxy_port, port, proxy_port, port, start, stop)
+
+    okc, msgc = install_service(CAMOUFLAGE_UNIT, unit, openrc, enable=True)
+    if not okc:
+        # 规则本身已经加载生效了，只是没法注册开机自启（容器/无 init 环境）。
+        # 这不算失败，但要让用户知道重启后得手动重放。
+        return True, ("外部访问 %s 会转到 %s；但未注册开机自启（%s），"
+                      "重启后需重新执行 --sync" % (proxy_port, port, msgc))
 
     return True, "外部访问 %s 会转到 %s，浏览器打开代理端口看到的是网站" % (proxy_port, port)
 
@@ -998,9 +1144,9 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
         return add("Nginx 语法检查", False, (err or out)[:400]), steps
     add("Nginx 语法检查", True, "通过")
 
-    rc, out, err = run(["systemctl", "reload", "nginx"])
+    rc, out, err = svc("reload", "nginx")
     if rc != 0:
-        run(["systemctl", "restart", "nginx"])
+        svc("restart", "nginx")
     add("重载 Nginx", True, "已生效")
 
     # 端口伪装：外部访问代理端口时也返回网站。属于增强项，失败不阻断部署。
@@ -1049,24 +1195,25 @@ def do_rollback():
             add("恢复 " + name, True, target)
     if os.path.exists(V2BX_SYSTEMD_DROPIN):
         os.remove(V2BX_SYSTEMD_DROPIN)
-        run(["systemctl", "daemon-reload"])
-    run(["systemctl", "restart", "V2bX"])
+        if INIT == "systemd":
+            run(["systemctl", "daemon-reload"])
+    svc("restart", "V2bX")
     time.sleep(5)
     add("重启 V2bX", True, "已恢复原始监听")
     rc, out, err = run(["nginx", "-t"])
     if rc == 0:
-        run(["systemctl", "reload", "nginx"])
+        svc("reload", "nginx")
         add("重载 Nginx", True, "已生效")
     else:
         if os.path.exists(NGINX_CONF):
             os.remove(NGINX_CONF)
-        run(["systemctl", "reload", "nginx"])
+        svc("reload", "nginx")
         add("重载 Nginx", True, "配置有误，已移除部署配置")
     return True, steps
 
 
 # ------------------------------------------------------------------ 配置同步
-SYNC_SERVICE = "hkbt-sync.service"
+SYNC_SERVICE = "hkbt-sync"
 SYNC_TIMER = "hkbt-sync.timer"
 V2BX_SYNC_DROPIN = "/etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf"
 
@@ -1173,13 +1320,13 @@ def do_sync(quiet=False, retries=3):
         if old:
             with open(NGINX_CONF, "w", encoding="utf-8") as f:
                 f.write(old)
-        return add("Nginx 语法检查", False,
-                   "新配置未通过，已回滚到原配置：%s" % (err or out)[:300]), steps
+        add("Nginx 语法检查", False, "新配置未通过，已回滚到原配置：%s" % (err or out)[:300])
+        return False, "Nginx 语法检查未通过，已回滚到原配置", steps
     add("Nginx 语法检查", True, "通过")
 
-    rc, out, err = run(["systemctl", "reload", "nginx"])
+    rc, out, err = svc("reload", "nginx")
     if rc != 0:
-        run(["systemctl", "restart", "nginx"])
+        svc("restart", "nginx")
     add("重载 Nginx", True, "已生效")
 
     # 端口变了，NAT 规则也要跟着换，否则「代理端口打开是网站」会失效
@@ -1202,21 +1349,34 @@ def do_sync(quiet=False, retries=3):
 
 
 def install_sync_units(interval_min=3):
-    """装一个 systemd timer，让面板改动自动落到 Nginx。
+    """装自动同步：面板改了端口/路径，Nginx 要自己跟上。
 
-    两个触发点：
-      1) V2bX 重启后立刻同步一次（drop-in 的 ExecStartPost，非阻塞）
-      2) 每 interval_min 分钟兜底一次 —— 面板上只改端口/路径不会重启 V2bX，
-         只能靠轮询发现
+    两个触发点，两种 init 系统各用各的机制：
 
-    用 drop-in 而不是改 V2bX.service，是为了让 `V2bX update` 覆盖主单元时
-    这层配置仍然生效。
+    | | systemd | OpenRC |
+    |---|---|---|
+    | 代理重启后立刻同步 | `V2bX.service.d` drop-in | init 脚本的 `post_start()` |
+    | 定时兜底 | `hkbt-sync.timer` | cron（crond） |
+
+    用 drop-in / post_start 而不是改主单元，是为了让 `V2bX update`
+    覆盖服务定义时这层钩子仍然在。
     """
-    if not os.path.exists("/run/systemd/system"):
-        return False, "当前环境没有 systemd，跳过（可手动执行 app.py --sync）"
+    if INIT == "none":
+        return False, "本机没有 systemd / OpenRC，跳过（可手动执行 app.py --sync）"
+
+    py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else (shutil.which("python3") or "python3")
+
+    if INIT == "openrc":
+        ok_cron, msg_cron = _install_sync_cron(interval_min, py)
+        ok_hook, msg_hook = _hook_openrc_v2bx(py)
+        if not ok_cron:
+            return False, "配置定时同步失败：%s" % msg_cron
+        note = "已启用：每 %d 分钟同步一次（cron）" % interval_min
+        note += "；V2bX 重启钩子%s" % ("已挂上" if ok_hook else "未挂上（%s）" % msg_hook)
+        return True, note
+
     try:
-        py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else (shutil.which("python3") or "python3")
-        svc = """[Unit]
+        unit_body = """[Unit]
 Description=HKBT: sync nginx config with V2bX panel
 After=network-online.target nginx.service
 Wants=network-online.target
@@ -1246,7 +1406,7 @@ WantedBy=timers.target
 ExecStartPost=/bin/sh -c 'systemctl start --no-block %s || true'
 """ % SYNC_SERVICE
 
-        for path, body in (("/etc/systemd/system/" + SYNC_SERVICE, svc),
+        for path, body in (("/etc/systemd/system/" + SYNC_SERVICE, unit_body),
                            ("/etc/systemd/system/" + SYNC_TIMER, timer),
                            (V2BX_SYNC_DROPIN, dropin)):
             os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1258,6 +1418,62 @@ ExecStartPost=/bin/sh -c 'systemctl start --no-block %s || true'
         return True, "已启用：V2bX 重启后立即同步，之后每 %d 分钟检查一次" % interval_min
     except Exception as e:
         return False, "安装同步服务失败：%s" % e
+
+
+def _install_sync_cron(interval_min, py):
+    """OpenRC 没有 timer，用 cron 做周期触发。"""
+    marker = "hkbt-sync"
+    line = "*/%d * * * * %s %s/app.py --sync --quiet  # %s" % (interval_min, py, BASE, marker)
+    try:
+        if shutil.which("crontab"):
+            _, cur, _ = run(["crontab", "-l"])
+            kept = [l for l in (cur or "").splitlines() if marker not in l]
+            kept.append(line)
+            p = subprocess.run(["crontab", "-"], input="\n".join(kept) + "\n",
+                               text=True, capture_output=True, timeout=30)
+            if p.returncode != 0:
+                return False, (p.stderr or "crontab 写入失败").strip()[:200]
+        else:
+            # busybox crond 直接读 spool 文件
+            d = "/var/spool/cron/crontabs"
+            os.makedirs(d, exist_ok=True)
+            f = os.path.join(d, "root")
+            cur = ""
+            if os.path.exists(f):
+                cur = open(f, encoding="utf-8", errors="ignore").read()
+            kept = [l for l in cur.splitlines() if marker not in l]
+            kept.append(line)
+            with open(f, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(kept) + "\n")
+            os.chmod(f, 0o600)
+
+        # crond 得在跑，否则规则写了也不会执行
+        if not svc_active("crond"):
+            svc("start", "crond")
+        svc("enable", "crond")
+        return True, line
+    except Exception as e:
+        return False, str(e)
+
+
+def _hook_openrc_v2bx(py):
+    """给 V2bX 的 OpenRC 脚本挂 post_start，重启后立刻同步一次。"""
+    init = "/etc/init.d/V2bX"
+    if not os.path.exists(init):
+        return False, "未找到 /etc/init.d/V2bX"
+    try:
+        txt = open(init, encoding="utf-8", errors="ignore").read()
+        if "hkbt-sync-hook" in txt:
+            return True, "已存在"
+        hook = ("\n# hkbt-sync-hook\n"
+                "post_start() {\n"
+                "    [ -f %s/app.py ] && %s %s/app.py --sync --quiet >/dev/null 2>&1 &\n"
+                "}\n" % (BASE, py, BASE))
+        with open(init, "a", encoding="utf-8") as f:
+            f.write(hook)
+        return True, init
+    except Exception as e:
+        return False, str(e)
 
 
 # ------------------------------------------------------------------ CLI 初始化
@@ -1369,8 +1585,10 @@ def cmd_init(password, port=None, path=None, template=None, brand=None, auto=Fal
                         "<h1 style=\"color:#E53E3E;margin:0 0 12px\">HKBT Deploy</h1>"
                         "<p style=\"color:#8B93A1\">站点尚未部署，请在面板上传 HTML 压缩包。</p>"
                         "</div></body></html>")
-            run(["chown", "-R", "www-data:www-data", site])
-            run(["systemctl", "reload", "nginx"])
+            nu = nginx_user()
+            if nu:
+                run(["chown", "-R", "%s:%s" % (nu, nu), site])
+            svc("reload", "nginx")
         print("  初始部署   : %s" % ("成功" if ok else "已写入配置但自检未通过，原因见上方 FAIL 行"))
     else:
         print("  初始部署   : 跳过（未检测到 V2bX 或缺少域名/IP）")
