@@ -287,16 +287,25 @@ def proxy_listen_port():
 
 
 def port_conflict(port, proxy_port):
-    """判断 Nginx 对外端口能否绑定，返回 (是否冲突, 原因)"""
-    if proxy_port and str(proxy_port) == str(port):
-        return True, ("对外端口不能填代理端口 %s：该端口已被 V2bX 占用，Nginx 绑不上，"
-                      "网站和面板会一起失效。请把对外端口改成 443，代理继续留在 %s，"
-                      "由 Nginx 按路径转发过去。" % (proxy_port, proxy_port))
+    """判断 Nginx 对外端口能否绑定，返回 (是否冲突, 原因)
+
+    代理与网站用同一个端口是允许的，靠地址分离共存：
+    sing-box 收窄到 127.0.0.1:443，Nginx 绑公网 IP:443 —— 这是两个不同的
+    socket，Linux 不会冲突。只有「代理不在这个端口上、却被别的程序占着」
+    才是真冲突。
+    """
     owner = port_owner(port)
-    if owner and owner != "nginx":
-        return True, ("%s 端口已被 %s 占用，Nginx 无法绑定。请换一个空闲端口（推荐 443）"
-                      % (port, owner))
-    return False, ""
+    if not owner or owner == "nginx":
+        return False, ""
+    if proxy_port and str(proxy_port) == str(port):
+        # 代理自己占着：走同端口模式，由 do_deploy 把它收窄到回环
+        return False, ""
+    if owner in ("V2bX", "sing-box"):
+        return True, ("%s 端口被 %s 占着，但面板给出的节点端口是 %s，两者对不上。"
+                      "请在面板把节点端口改到空闲端口（如 20000），把 %s 让给网站"
+                      % (port, owner, proxy_port, port))
+    return True, ("%s 端口已被 %s 占用，Nginx 无法绑定。请先停掉该服务，或换一个空闲端口"
+                  % (port, owner))
 
 
 # ------------------------------------------------------------------ V2bX 探测
@@ -799,8 +808,12 @@ def disable_conflicts(port):
     return moved
 
 
-def narrow_v2bx(target="127.0.0.1"):
-    """把 sing-box 收窄到回环地址"""
+def narrow_v2bx(target="127.0.0.1", port=None):
+    """把 sing-box 收窄到回环地址，把公网地址让给 Nginx
+
+    只在「代理端口 == 网站端口」时调用。两个进程绑不同的具体地址（127.0.0.1
+    与公网 IP）可以共存，但都绑 0.0.0.0 / :: 就会抢。
+    """
     if not os.path.exists(V2BX_CONF):
         return True, "未检测到 V2bX，跳过"
     if not svc_exists("V2bX"):
@@ -825,8 +838,12 @@ def narrow_v2bx(target="127.0.0.1"):
     svc("restart", "V2bX")
     time.sleep(6)
     _, out, _ = run(["ss", "-tlnp"])
-    ok = ("%s:%s" % (target, "443")) in out or re.search(r"%s:\d+" % re.escape(target), out)
-    return ok, "V2bX 监听已收窄到 %s" % target if ok else "收窄后未观察到回环监听，请检查"
+    if port:
+        ok = re.search(r"%s:%s\b" % (re.escape(target), str(port)), out or "") is not None
+    else:
+        ok = re.search(r"%s:\d+" % re.escape(target), out or "") is not None
+    return ok, ("V2bX 监听已收窄到 %s:%s" % (target, port or "*")) if ok \
+        else "收窄后未观察到 %s:%s 的监听，请检查 V2bX 日志" % (target, port or "*")
 
 
 def ipv6_usable():
@@ -902,8 +919,11 @@ def unzip_site(zip_path, site_dir):
 def verify(domain, port, path, public_ip, proxy_port=None):
     """部署后自检。统一走 127.0.0.1，避免 NAT 机器公网回环不通造成误报。"""
     proxy_port = str(proxy_port or port)
+    # 同端口时 127.0.0.1:port 上是 sing-box，Nginx 绑的是公网 IP，只能从公网地址访问。
+    # 分离部署时走回环，避免 NAT 机器公网回环不通造成误报。
+    probe = (public_ip or "127.0.0.1") if proxy_port == str(port) else "127.0.0.1"
     checks = []
-    r = "--resolve %s:%s:127.0.0.1" % (domain, port)
+    r = "--resolve %s:%s:%s" % (domain, port, probe)
 
     _, code, _ = run("curl -4 -sk -o /dev/null -w '%%{http_code}' -m 10 %s https://%s:%s/" % (r, domain, port), shell=True)
     checks.append(("网站首页 /", code == "200", code or "连接失败"))
@@ -922,7 +942,7 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     checks.append(("代理路径 %s（WebSocket）" % path, wsc == "101",
                    wsc or "连接失败"))
 
-    _, subj, _ = run("echo | openssl s_client -connect 127.0.0.1:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (port, domain), shell=True)
+    _, subj, _ = run("echo | openssl s_client -connect %s:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (probe, port, domain), shell=True)
     ok_cert = (("CN=%s" % domain) in subj) or (("CN = %s" % domain) in subj)
     checks.append(("证书匹配域名", ok_cert, subj.replace("subject=", "") or "未取到（若自签证书可忽略）"))
 
@@ -1107,13 +1127,23 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     else:
         add("清理冲突配置", True, "无冲突配置")
 
-    # ListenIP=:: 依赖 IPv6 栈；本机没有 IPv6 出口时重启后会 bind 失败
-    ok, msg = normalize_listen_ip()
-    if not add("规范 sing-box 监听地址", ok, msg):
-        return False, steps
-
-    # 代理在独立端口时不抢端口，收窄反而会让客户端断连，跳过
-    add("收窄 sing-box 监听", True, "代理在独立端口 %s，无需收窄" % proxy_port)
+    if str(proxy_port) == str(port):
+        # 同端口共存：sing-box 让出公网地址，Nginx 绑公网 IP 接客
+        if not (ip and ip in local_ips()):
+            return add("同端口共存", False,
+                       "公网 IP %s 不在本机网卡上，无法与代理共用 %s 端口。"
+                       "请在面板把节点端口改成 20000 之类的空闲端口，再重新部署"
+                       % (ip or "未取到", port)), steps
+        ok, msg = narrow_v2bx("127.0.0.1", port)
+        if not add("收窄 sing-box 监听", ok, msg):
+            return False, steps
+    else:
+        # ListenIP=:: 依赖 IPv6 栈；本机没有 IPv6 出口时重启后会 bind 失败
+        ok, msg = normalize_listen_ip()
+        if not add("规范 sing-box 监听地址", ok, msg):
+            return False, steps
+        # 代理在独立端口时不抢端口，收窄反而会让客户端断连，跳过
+        add("收窄 sing-box 监听", True, "代理在独立端口 %s，无需收窄" % proxy_port)
 
     site_dir = DEFAULT_SITE
     if zip_path:
@@ -1590,7 +1620,13 @@ def cmd_init(password, port=None, path=None, template=None, brand=None, auto=Fal
             if nu:
                 run(["chown", "-R", "%s:%s" % (nu, nu), site])
             svc("reload", "nginx")
-        print("  初始部署   : %s" % ("成功" if ok else "已写入配置但自检未通过，原因见上方 FAIL 行"))
+        if not ok:
+            # 不能只打印一行「未通过」就往下走：调用方（hkbt.sh）会当成部署成功，
+            # 继续打印面板地址和「站点已就绪」，用户看到的全是空值。
+            print("  初始部署   : 失败，原因见上方 FAIL 行")
+            print("  修好后重新执行即可，不需要手工清理。")
+            return None
+        print("  初始部署   : 成功")
     else:
         print("  初始部署   : 跳过（未检测到 V2bX 或缺少域名/IP）")
         if not v["installed"]:
