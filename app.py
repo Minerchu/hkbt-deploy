@@ -453,10 +453,16 @@ def detect_v2bx():
 def cert_expiry(cert):
     if not cert or not os.path.exists(cert):
         return ""
-    rc, out, _ = run(["openssl", "x509", "-in", cert, "-noout", "-enddate"])
-    if rc == 0 and "=" in out:
-        return out.split("=", 1)[1].strip()
-    return ""
+    if shutil.which("openssl"):
+        rc, out, _ = run(["openssl", "x509", "-in", cert, "-noout", "-enddate"])
+        if rc == 0 and "=" in out:
+            return out.split("=", 1)[1].strip()
+    # 没有 openssl 时用标准库读，Alpine 最小系统就属于这种
+    try:
+        import ssl
+        return ssl._ssl._test_decode_cert(cert).get("notAfter", "")
+    except Exception:
+        return ""
 
 
 # ------------------------------------------------------------------ Nginx 配置生成
@@ -942,9 +948,14 @@ def verify(domain, port, path, public_ip, proxy_port=None):
     checks.append(("代理路径 %s（WebSocket）" % path, wsc == "101",
                    wsc or "连接失败"))
 
-    _, subj, _ = run("echo | openssl s_client -connect %s:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (probe, port, domain), shell=True)
-    ok_cert = (("CN=%s" % domain) in subj) or (("CN = %s" % domain) in subj)
-    checks.append(("证书匹配域名", ok_cert, subj.replace("subject=", "") or "未取到（若自签证书可忽略）"))
+    if shutil.which("openssl"):
+        _, subj, _ = run("echo | openssl s_client -connect %s:%s -servername %s 2>/dev/null | openssl x509 -noout -subject" % (probe, port, domain), shell=True)
+        ok_cert = (("CN=%s" % domain) in subj) or (("CN = %s" % domain) in subj)
+        checks.append(("证书匹配域名", ok_cert, subj.replace("subject=", "").strip() or "未取到"))
+    else:
+        # Alpine 最小系统默认不带 openssl 命令。证书本身没问题（Nginx 已经在用），
+        # 只是没法在这里解析 —— 报 FAIL 会让用户以为部署失败。
+        checks.append(("证书匹配域名", True, "本机未安装 openssl，跳过该项"))
 
     _, ls, _ = run(["ss", "-tlnp"])
     has_v2bx = svc_exists("V2bX")
@@ -1379,6 +1390,60 @@ def do_sync(quiet=False, retries=3):
     return True, "已同步：代理 %s，路径 %s" % (proxy_port, path), steps
 
 
+PANEL_SERVICE = "hkbt-deploy"
+
+
+def install_panel_service():
+    """注册并启动部署面板（127.0.0.1:8899，只经 Nginx 反代访问）。
+
+    hkbt.sh 单独运行时也要有面板，否则 Nginx 里那段 /__deploy-xxx/ 反代
+    全部 502 —— 站点是好的，只有面板打不开，很容易被当成部署失败。
+    """
+    py = shutil.which("python3") or "/usr/bin/python3"
+    unit = """[Unit]
+Description=HKBT Deploy Panel
+After=network.target nginx.service
+
+[Service]
+Type=simple
+WorkingDirectory=%s
+ExecStart=%s %s/app.py --serve
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+""" % (BASE, py, BASE)
+
+    openrc = """#!/sbin/openrc-run
+name="HKBT Deploy Panel"
+command="%s"
+command_args="%s/app.py --serve"
+command_user="root"
+command_background="yes"
+pidfile="/run/hkbt-deploy.pid"
+output_log="/var/log/hkbt-deploy-panel.log"
+error_log="/var/log/hkbt-deploy-panel.err"
+
+depend() {
+    need net
+    after nginx
+}
+""" % (py, BASE)
+
+    ok, msg = install_service(PANEL_SERVICE, unit, openrc, enable=True)
+    if not ok:
+        return False, "注册面板服务失败：%s" % msg
+    svc("restart", PANEL_SERVICE)
+    for _ in range(12):
+        time.sleep(0.5)
+        if svc_active(PANEL_SERVICE):
+            return True, "面板服务已启动（127.0.0.1:%s）" % PANEL_PORT
+    return False, "面板服务已注册但没起来，检查 /var/log/hkbt-deploy-panel.err"
+
+
 def install_sync_units(interval_min=3):
     """装自动同步：面板改了端口/路径，Nginx 要自己跟上。
 
@@ -1771,6 +1836,8 @@ def main():
     ap.add_argument("--sync", action="store_true",
                     help="把面板最新端口/路径同步到 Nginx（幂等，无变化不动任何文件）")
     ap.add_argument("--quiet", action="store_true", help="安静模式：只在有变更或出错时输出")
+    ap.add_argument("--install-panel", action="store_true",
+                    help="注册并启动部署面板服务（systemd / OpenRC）")
     ap.add_argument("--install-sync", action="store_true",
                     help="安装 systemd timer：面板改动后自动同步（V2bX 重启即触发 + 定时兜底）")
     ap.add_argument("--sync-interval", type=int, default=3,
@@ -1787,6 +1854,11 @@ def main():
         print(json.dumps({k: v[k] for k in keys}, ensure_ascii=False))
         # 退出码 2 表示「面板没给出 path」，调用方据此中止，不要继续部署
         sys.exit(0 if v["path"] else 2)
+
+    if a.install_panel:
+        ok, msg = install_panel_service()
+        print(("OK   " if ok else "FAIL ") + msg)
+        sys.exit(0 if ok else 1)
 
     if a.install_sync:
         ok, msg = install_sync_units(a.sync_interval)
