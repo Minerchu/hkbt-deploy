@@ -159,6 +159,15 @@ def install_service(name, systemd_unit, openrc_script, enable=True):
     return False, "本机没有 systemd / OpenRC，跳过服务注册"
 
 
+def ensure_nginx_boot():
+    """nginx 装完默认不注册开机自启（Alpine 的 apk 包尤其如此），
+    重启后网站直接 404，而 V2bX 和面板都正常 —— 很难联想到是这一层。"""
+    if INIT == "openrc":
+        run(["rc-update", "add", "nginx", "default"])
+    elif INIT == "systemd":
+        run(["systemctl", "enable", "nginx"])
+
+
 def nginx_conf_dir():
     """Nginx 的站点配置目录。Alpine 的 nginx 包用 http.d，别的发行版用 conf.d。"""
     for d in ("/etc/nginx/conf.d", "/etc/nginx/http.d"):
@@ -1188,7 +1197,8 @@ def do_deploy(domain, port, path, zip_path=None, brand=None, template=None):
     rc, out, err = svc("reload", "nginx")
     if rc != 0:
         svc("restart", "nginx")
-    add("重载 Nginx", True, "已生效")
+    ensure_nginx_boot()
+    add("重载 Nginx", True, "已生效，已加入开机自启")
 
     # 端口伪装：外部访问代理端口时也返回网站。属于增强项，失败不阻断部署。
     okc, msgc = setup_camouflage(proxy_port, port, cfg.get("camouflage", True))
