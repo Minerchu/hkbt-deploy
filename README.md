@@ -228,6 +228,17 @@ XrayR 配 `CertMode: none` + `EnableFallback: true`，Trojan 收到不像代理�
 
 ## 安装
 
+### 支持的系统
+
+| 系统 | init | Nginx 配置目录 | 站点属主 | 定时同步 |
+|---|---|---|---|---|
+| Debian 11+ / Ubuntu 20+ | systemd | `/etc/nginx/conf.d` | `www-data` | `systemd timer` |
+| Alpine 3.18+ | OpenRC | `/etc/nginx/http.d` | `nginx` | `cron` |
+| RHEL / Rocky / Alma | systemd | `/etc/nginx/conf.d` | `nginx` | `systemd timer` |
+
+这些差异脚本自己判断，不用手工指定。启动时用 `sh install.sh` 还是 `bash install.sh` 都行 ——
+Alpine 上没有 bash 时会先 `apk add bash` 再重新执行自己。
+
 ### 前提
 
 这三件事必须先具备，否则装完只会有面板、没有站点：
@@ -466,17 +477,24 @@ iptables -t nat -D PREROUTING -p tcp --dport 20000 -j REDIRECT --to-ports 443
 
 ### 触发时机
 
-装完会自动启用两个触发点：
+装完会自动启用两个触发点。两种 init 系统各用各的机制：
+
+| 触发 | systemd | OpenRC（Alpine） |
+|---|---|---|
+| 代理重启后立刻同步 | `V2bX.service.d/20-hkbt-sync.conf` 的 `ExecStartPost` | `/etc/init.d/V2bX` 里的 `post_start()` |
+| 定时兜底 | `hkbt-sync.timer`，每 3 分钟 | `cron`，每 3 分钟 |
 
 ```bash
-# 1) V2bX 重启后立刻同步一次（systemd drop-in，非阻塞）
-/etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf
-
-# 2) 每 3 分钟兜底一次（面板上只改端口/路径不会重启 V2bX，只能轮询）
+# systemd
 systemctl list-timers hkbt-sync.timer
+journalctl -u hkbt-sync -n 30
+
+# OpenRC
+crontab -l | grep hkbt-sync
+tail -30 /var/log/messages | grep hkbt
 ```
 
-用 drop-in 而不是改 `V2bX.service` 主文件，是为了让 `V2bX update` 覆盖主单元时这层配置仍然生效。
+面板上只改端口/路径不会重启 V2bX，所以必须靠轮询发现 —— 这就是定时任务的作用。
 
 ### 手动操作
 
@@ -494,9 +512,14 @@ journalctl -u hkbt-sync -n 50                      # 同步日志
 关掉同步：
 
 ```bash
+# systemd
 systemctl disable --now hkbt-sync.timer
 rm /etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf
 systemctl daemon-reload
+
+# OpenRC
+crontab -l | grep -v hkbt-sync | crontab -
+sed -i '/# hkbt-sync-hook/,/^}/d' /etc/init.d/V2bX
 ```
 
 > 同步只改 Nginx 和 NAT 规则，**不碰 V2bX 配置、不重启代理**。

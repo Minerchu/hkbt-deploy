@@ -23,6 +23,7 @@
 | 部署全绿但代理连上即断，配置里 location 是个猜的路径 | [13](#13-面板读不到-path-时不能用默认值兜底) |
 | 面板改过端口/路径后，网站正常但代理连不上 | [14](#14-面板改了端口或路径nginx-还停在旧值) |
 | V2bX 起不来，网站却先把 443 占了，两个问题混在一起 | [15](#15-代理没起来就部署网站问题会搅在一起) |
+| Alpine 上 `wget: unrecognized option: N`、装完服务起不来 | [16](#16-alpine-上跑不起来busybox-与-systemd-的差异) |
 
 ---
 
@@ -667,6 +668,77 @@ bash hkbt.sh
 
 > 顺序是「先确认代理能用，再配网站」，不是「一起装完再看」。
 > 代理配错时网站不部署，443 空着反而是好事 —— 至少只有一个问题要查。
+
+---
+
+## 16. Alpine 上跑不起来：BusyBox 与 systemd 的差异
+
+**现象**
+
+在 Alpine 机器上执行一键命令，第一步就报错：
+
+```
+wget: unrecognized option: N
+BusyBox v1.37.0 multi-call binary.
+```
+
+或者 `bash install.sh` 直接 `bash: not found`。
+
+**根因**
+
+Alpine 用的是 BusyBox 工具链，跟 GNU 版本差了三处：
+
+| 差异 | 影响 |
+|---|---|
+| `wget` 没有 `-N` / `--progress=bar` / `--no-check-certificate` | 下载命令直接失败 |
+| 默认没有 bash，`/bin/sh` 是 ash | `[[ ]]`、数组全部不可用 |
+| 用 OpenRC，没有 systemd | `systemctl` 命令不存在 |
+
+再加上 Alpine 的 nginx 包有两处不同：配置目录是 `/etc/nginx/http.d`（不是 `conf.d`），
+运行用户是 `nginx`（不是 `www-data`），而且 `nginx.conf` 里预置了
+`ssl_session_cache shared:SSL:2m` —— 配置里再声明 `shared:SSL:10m` 会报
+`the size ... conflicts with already declared size`。
+
+**处理**
+
+现在的版本已经全部适配，装的时候不用做任何特殊处理：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Minerchu/V2bX-script/master/install.sh -o install.sh
+sh install.sh          # 用 sh 就行，脚本会自己装 bash 再重新执行
+```
+
+脚本内部做的事：
+
+- 下载统一走 `curl`，缺 curl 才退回 `wget -O`
+- 检测不到 `BASH_VERSION` 就先 `apk add bash` 再 `exec bash "$0"`
+- 服务操作走 `rc-service` / `rc-update`，日志看 `/var/log/V2bX.log`
+- Nginx 配置写到 `/etc/nginx/http.d/hkbt-deploy.conf`，属主设成 `nginx`
+- SSL 共享内存区改名 `hkbt_ssl`，避开 Alpine 的默认值
+- 定时同步改用 `cron`，代理重启钩子挂在 `/etc/init.d/V2bX` 的 `post_start()`
+
+**验证**
+
+```bash
+# 判断当前是什么 init
+ps -p 1 -o comm=
+# systemd → 用 systemctl；init → 用 rc-service
+
+# Alpine 上确认服务
+rc-service nginx status
+rc-service V2bX status
+rc-service hkbt-deploy status
+
+# 同步任务
+crontab -l | grep hkbt-sync
+
+# 日志
+tail -50 /var/log/V2bX.log
+tail -20 /var/log/hkbt-deploy-panel.err
+```
+
+> 手动排查时别再敲 `systemctl`。Alpine 上一律换成 `rc-service <名字> <动作>`，
+> 开机自启用 `rc-update add <名字> default`。
 
 ---
 
