@@ -24,6 +24,7 @@
 | 面板改过端口/路径后，网站正常但代理连不上 | [14](#14-面板改了端口或路径nginx-还停在旧值) |
 | V2bX 起不来，网站却先把 443 占了，两个问题混在一起 | [15](#15-代理没起来就部署网站问题会搅在一起) |
 | Alpine 上 `wget: unrecognized option: N`、装完服务起不来 | [16](#16-alpine-上跑不起来busybox-与-systemd-的差异) |
+| `Could not resolve host`，连脚本都拉不下来 | [17](#17-could-not-resolve-host解析不到域名) |
 
 ---
 
@@ -739,6 +740,66 @@ tail -20 /var/log/hkbt-deploy-panel.err
 
 > 手动排查时别再敲 `systemctl`。Alpine 上一律换成 `rc-service <名字> <动作>`，
 > 开机自启用 `rc-update add <名字> default`。
+
+---
+
+## 17. `Could not resolve host`：解析不到域名
+
+**现象**
+
+```
+# curl -fsSL https://raw.githubusercontent.com/... -o install.sh
+curl: (6) Could not resolve host: raw.githubusercontent.com
+```
+
+第一步就挂，脚本连下载都做不到。
+
+**这不是脚本的问题**，是这台机器解析不了任何域名。常见三种原因：
+
+| 检查 | 命令 | 说明 |
+|---|---|---|
+| `resolv.conf` 是空的 | `cat /etc/resolv.conf` | Alpine 模板常见，只有注释没有 nameserver |
+| 只写了 IPv6 DNS | 同上 | 机器没有 IPv6 出口时，解析全部超时 |
+| 网络根本没通 | `ping -c2 1.1.1.1` | 裸 IP 也不通，先查路由和网关 |
+
+**新版脚本会自动修**
+
+`install.sh` 在 `apk add bash` **之前**就会探一遍 `github.com`。解析不了时依次试
+`223.5.5.5` / `119.29.29.29` / `1.1.1.1` / `8.8.8.8` / `9.9.9.9`，哪个通就写进
+`/etc/resolv.conf`：
+
+```
+  DNS 解析失败，尝试自动修复…
+  DNS 已修复：nameserver 223.5.5.5（已锁定防 DHCP 覆盖，解锁：chattr -i /etc/resolv.conf）
+```
+
+放在这个位置是有原因的：`apk add bash` 本身要解析软件源域名，DNS 不通的话连 bash
+都装不上，报错会出现在第 5 行，看不出真正原因。
+
+**手工修**
+
+```bash
+printf 'nameserver 223.5.5.5\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+nslookup github.com 2>&1 | head -5
+```
+
+改完又变回去，说明 `udhcpc` / `dhcpcd` 在覆盖：
+
+```bash
+chattr +i /etc/resolv.conf      # 锁住；要改先 chattr -i
+```
+
+**解析通了但 GitHub 连不上**
+
+那就是域名被拦，不是 DNS 问题。脚本的下载环节会自动切 `ghproxy.net` / `gh-proxy.com`，
+手工装时也可以直接走镜像：
+
+```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Minerchu/V2bX-script@master/install.sh -o install.sh
+```
+
+> DNS 是地基。就算用镜像把脚本拉下来，V2bX 申请证书要连 `api.cloudflare.com`，
+> 节点要解析 `ApiHost` —— 解析没修好，最后一定卡在证书那一步。
 
 ---
 
