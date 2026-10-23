@@ -1213,7 +1213,8 @@ def do_rollback():
 
 
 # ------------------------------------------------------------------ 配置同步
-SYNC_SERVICE = "hkbt-sync"
+SYNC_SERVICE = "hkbt-sync"          # 不带后缀，OpenRC 直接用这个名字
+SYNC_UNIT = SYNC_SERVICE + ".service"   # systemd 的文件名和 unit 名
 SYNC_TIMER = "hkbt-sync.timer"
 V2BX_SYNC_DROPIN = "/etc/systemd/system/V2bX.service.d/20-hkbt-sync.conf"
 
@@ -1399,14 +1400,14 @@ Unit=%s
 
 [Install]
 WantedBy=timers.target
-""" % (interval_min, SYNC_SERVICE)
+""" % (interval_min, SYNC_UNIT)
 
         dropin = """[Service]
 # 由 hkbt-deploy 写入：V2bX 重启后立刻把面板最新参数同步到 Nginx
 ExecStartPost=/bin/sh -c 'systemctl start --no-block %s || true'
-""" % SYNC_SERVICE
+""" % SYNC_UNIT
 
-        for path, body in (("/etc/systemd/system/" + SYNC_SERVICE, unit_body),
+        for path, body in (("/etc/systemd/system/" + SYNC_UNIT, unit_body),
                            ("/etc/systemd/system/" + SYNC_TIMER, timer),
                            (V2BX_SYNC_DROPIN, dropin)):
             os.makedirs(os.path.dirname(path), exist_ok=True)
